@@ -20,3 +20,5 @@ pub const DEFAULT_EXT: &str = ".blp";
 
 /// Friendly name shown in registry under CLSID
 pub const FRIENDLY_NAME: &str = "BLP Thumbnail Provider";
+
+pub const THUMB_SHELLEX_CLSID: &str = "{e357fccd-a995-4576-b01f-234630154e96}"; // Thumbnail Provider slot

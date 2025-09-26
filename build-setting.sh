@@ -7,7 +7,7 @@ set -euo pipefail
 
 # ---- Project metadata ----
 CRATE_NAME="${CRATE_NAME:-blp-thumb-win}"
-LIB_NAME="${LIB_NAME:-blp_thumb}"                 # -> blp_thumb.dll
+LIB_NAME="${LIB_NAME:-blp_thumb_win}"                 # -> blp_thumb.dll
 BIN_NAME="${BIN_NAME:-blp-thumb-installer}"       # -> blp-thumb-installer.exe
 REPO_SLUG="${REPO_SLUG:-WarRaft/blp-thumb-win-rs}"  # owner/repo for gh
 

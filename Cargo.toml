@@ -15,6 +15,7 @@ Includes a separate CLI installer tool for easy registration/unregistration.
 
 [dependencies]
 windows = { version = "0.62.1", features = [
+
     "Win32_Foundation",
     "Win32_System_Com", # IClassFactory
     "Win32_Storage_FileSystem",
@@ -23,6 +24,7 @@ windows = { version = "0.62.1", features = [
     "Win32_UI_Shell_Common",
 ] }
 windows-core = "0.62.1"
+windows-implement = "0.60.1"
 once_cell = "1"
 widestring = "1"
 image = "0.25.8"
@@ -34,8 +36,8 @@ winreg = "0.55.0"
 # Library section (the COM DLL)
 # ------------------------------
 [lib]
-name = "blp_thumb"
-crate-type = ["cdylib"]
+name = "blp_thumb_win"
+crate-type = ["cdylib", "rlib"]
 
 # ------------------------------
 # CLI binaries (installer, helper)
@@ -43,3 +45,7 @@ crate-type = ["cdylib"]
 [[bin]]
 name = "blp-thumb-installer"
 path = "src/bin/installer.rs"
+
+
+
+
