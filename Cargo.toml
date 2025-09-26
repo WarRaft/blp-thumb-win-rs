@@ -1,0 +1,45 @@
+[package]
+name = "blp-thumb-win"
+version = "0.1.0"
+edition = "2024"
+authors = ["nazarpunk <nazarpunk@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/WarRaft/blp-thumb-win-rs"
+readme = "README.md"
+keywords = ["blp", "warcraft", "image", "texture"]
+categories = ["encoding", "graphics"]
+description = """
+Windows thumbnail provider (COM DLL) for Blizzard BLP image format.
+Includes a separate CLI installer tool for easy registration/unregistration.
+"""
+
+[dependencies]
+windows = { version = "0.62.1", features = [
+    "Win32_Foundation",
+    "Win32_System_Com", # IClassFactory
+    "Win32_Storage_FileSystem",
+    "Win32_Graphics_Gdi", # LCS_sRGB и BITMAPV5HEADER
+    "Win32_UI_Shell", # IThumbnailProvider, IInitializeWithFile
+    "Win32_UI_Shell_Common",
+] }
+windows-core = "0.62.1"
+once_cell = "1"
+widestring = "1"
+image = "0.25.8"
+blp = "0.1.32"
+dialoguer = "0.12.0"
+winreg = "0.55.0"
+
+# ------------------------------
+# Library section (the COM DLL)
+# ------------------------------
+[lib]
+name = "blp_thumb"
+crate-type = ["cdylib"]
+
+# ------------------------------
+# CLI binaries (installer, helper)
+# ------------------------------
+[[bin]]
+name = "blp-thumb-installer"
+path = "src/bin/installer.rs"
