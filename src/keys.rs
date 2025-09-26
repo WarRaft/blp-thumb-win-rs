@@ -1,24 +1,54 @@
 //! Common constants for BLP Thumbnail Provider registration.
-//! Shared between COM DLL (lib.rs) and installer (bin/installer.rs).
+//! Shared between the COM DLL and the installer. No duplicated string CLSIDs.
 
 use windows::core::GUID;
 
-/// Fixed Windows Shell Thumbnail Provider handler category
-pub const SHELL_THUMB_HANDLER_CATID: &str = "{e357fccd-a995-4576-b01f-234630154e96}";
+/// Shell Thumbnail Provider category (Implemented Categories + ShellEx binding).
+/// - HKCR\CLSID\{CLSID}\Implemented Categories\{SHELL_THUMB_HANDLER_CATID}
+/// - HKCR\<.ext | ProgID>\ShellEx\{SHELL_THUMB_HANDLER_CATID} = {CLSID}
+pub const SHELL_THUMB_HANDLER_CATID: GUID = GUID::from_u128(0xE357FCCD_A995_4576_B01F_234630154E96);
 
-/// !!! Replace with your real CLSID (must match in DLL + registry) !!!
-pub const CLSID_BLP_THUMB_STR: &str = "{12345678-1234-1234-1234-1234567890ab}";
+/// CLSID of this provider. Must match DLL exports and registry bindings.
+pub const CLSID_BLP_THUMB: GUID = GUID::from_u128(0xB2E9A1F3_7C5D_4E2B_96A1_2C3D4E5F6A7B);
 
-/// Same CLSID as GUID type (for DLL implementation)
-pub const CLSID_BLP_THUMB: GUID = GUID::from_u128(0x12345678_1234_1234_1234_1234567890ab);
-
-/// ProgID that .blp extension is bound to
+/// ProgID bound to `.blp` (HKCR\WarRaft.BLP; HKCR\.blp -> WarRaft.BLP).
 pub const DEFAULT_PROGID: &str = "WarRaft.BLP";
 
-/// File extension we support
+/// File extension this provider supports.
 pub const DEFAULT_EXT: &str = ".blp";
 
-/// Friendly name shown in registry under CLSID
+/// Human-friendly provider name (HKCR\CLSID\{CLSID}\(Default)).
 pub const FRIENDLY_NAME: &str = "BLP Thumbnail Provider";
 
-pub const THUMB_SHELLEX_CLSID: &str = "{e357fccd-a995-4576-b01f-234630154e96}"; // Thumbnail Provider slot
+/// ----- Helpers (format GUIDs for registry values) -----
+
+/// Returns `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` (uppercase, with braces).
+#[inline]
+pub fn guid_braced_upper(g: &GUID) -> String {
+    format!(
+        "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+        g.data1,
+        g.data2,
+        g.data3,
+        g.data4[0],
+        g.data4[1],
+        g.data4[2],
+        g.data4[3],
+        g.data4[4],
+        g.data4[5],
+        g.data4[6],
+        g.data4[7]
+    )
+}
+
+/// `{CLSID_BLP_THUMB}` as a braced uppercase string (for registry writes).
+#[inline]
+pub fn clsid_str() -> String {
+    guid_braced_upper(&CLSID_BLP_THUMB)
+}
+
+/// `{SHELL_THUMB_HANDLER_CATID}` as a braced uppercase string.
+#[inline]
+pub fn shell_thumb_handler_catid_str() -> String {
+    guid_braced_upper(&SHELL_THUMB_HANDLER_CATID)
+}
