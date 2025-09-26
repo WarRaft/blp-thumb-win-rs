@@ -1,116 +1,58 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "$0")/build-settings.sh"
 
-# Load settings early (may get re-sourced after bump)
-. "$(dirname "$0")/build-setting.sh"
+need jq; need git; need gh
 
-usage() {
-  cat <<EOF
-Usage:
-  $(basename "$0") --bump {patch|minor|major|X.Y.Z} [--notes "text"] [--dry-run]
+# 📌 Kind of version bump (default = patch)
+# Allowed values: patch | minor | major
+BUMP_KIND="${BUMP_KIND:-patch}"
 
-Options:
-  --bump     Bump level or explicit semver (required)
-  --notes    Release notes text (optional). If omitted, uses a small default.
-  --dry-run  Do everything except git push and gh release
-EOF
-}
+# 🚨 Ensure the repo is clean
+git diff --quiet || { echo "❌ Uncommitted changes in repo"; exit 1; }
+# 🚨 Ensure GitHub CLI is authenticated
+gh auth status &>/dev/null || { echo "❌ gh is not authenticated. Run: gh auth login"; exit 1; }
 
-BUMP=""
-NOTES=""
-DRY_RUN="0"
+# 📦 Project metadata
+PROJECT_NAME="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')"
+CURR_VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
 
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --bump) shift; BUMP="${1:-}";;
-    --notes) shift; NOTES="${1:-}";;
-    --dry-run) DRY_RUN="1";;
-    -h|--help) usage; exit 0;;
-    *) echo "Unknown arg: $1"; usage; exit 2;;
-  esac
-  shift || true
-done
-
-[ -n "${BUMP}" ] || { echo "ERR: --bump is required"; usage; exit 2; }
-
-# Ensure tools
-command -v gh >/dev/null 2>&1 || { echo "ERR: GitHub CLI 'gh' not found"; exit 1; }
-command -v cargo >/dev/null 2>&1 || { echo "ERR: cargo not found"; exit 1; }
-
-# Install cargo-edit if needed (for `cargo set-version`)
-if ! cargo set-version --help >/dev/null 2>&1; then
-  echo "==> Installing cargo-edit (provides 'cargo set-version')"
-  cargo install cargo-edit
-fi
-
-# Clean working tree check
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "ERR: Working tree not clean. Commit/stash changes before publishing."
-  exit 1
-fi
-
-# Determine bump command
-case "${BUMP}" in
-  patch|minor|major)
-    echo "==> Bumping version: ${BUMP}"
-    cargo set-version --bump "${BUMP}"
-    ;;
-  *)
-    # allow explicit semver X.Y.Z
-    if printf '%s' "${BUMP}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-      echo "==> Setting version: ${BUMP}"
-      cargo set-version "${BUMP}"
-    else
-      echo "ERR: --bump must be 'patch', 'minor', 'major' or 'X.Y.Z'"
-      exit 2
-    fi
-    ;;
+# 🔢 Calculate new version
+IFS=. read -r MAJ MIN PAT <<<"$CURR_VERSION"
+case "$BUMP_KIND" in
+  major) NEW_VERSION="$((MAJ+1)).0.0" ;;
+  minor) NEW_VERSION="$MAJ.$((MIN+1)).0" ;;
+  patch) NEW_VERSION="$MAJ.$MIN.$((PAT+1))" ;;
+  *) echo "❌ Unknown BUMP_KIND='$BUMP_KIND'"; exit 1 ;;
 esac
+echo "🔢 Version: $CURR_VERSION → $NEW_VERSION"
+TAG="v$NEW_VERSION"
 
-# Re-read settings to get NEW version/paths
-. "$(dirname "$0")/build-setting.sh"
-
-echo "==> Committing version bump to ${TAG}"
-git add Cargo.toml Cargo.lock || true
-git commit -m "chore: release ${TAG}"
-
-echo "==> Tagging ${TAG}"
-git tag -a "${TAG}" -m "${TAG}"
-
-# Build artifacts
-"$(dirname "$0")/build-only.sh"
-
-# Prepare release notes
-if [ -z "${NOTES}" ]; then
-  NOTES="Automated release ${TAG}
-
-Artifacts:
-- ${BUNDLE_NAME}.zip (Windows x64)
-Includes: ${LIB_NAME}.dll, ${BIN_NAME}.exe, (optional) PDBs, README, LICENSE.
-"
+# 1️⃣ Update version in Cargo.toml
+if sed --version &>/dev/null; then
+  sed -E -i "s/^version *= *\"[0-9]+\.[0-9]+\.[0-9]+([^\"]*)?\"/version = \"$NEW_VERSION\"/" Cargo.toml
+else
+  sed -E -i '' "s/^version *= *\"[0-9]+\.[0-9]+\.[0-9]+([^\"]*)?\"/version = \"$NEW_VERSION\"/" Cargo.toml
 fi
+[[ -f Cargo.lock ]] && cargo generate-lockfile >/dev/null
 
-# Push & release
-if [ "${DRY_RUN}" = "1" ]; then
-  echo "==> DRY RUN: skipping git push and gh release"
-  echo "Would push tag ${TAG} and create release with ${ZIP_PATH}"
-  exit 0
-fi
+# 2️⃣ Commit + tag
+git add Cargo.toml Cargo.lock 2>/dev/null || true
+git commit -m "chore(release): $TAG"
+git tag -a "$TAG" -m "$PROJECT_NAME $NEW_VERSION"
+git push origin HEAD --tags
 
-echo "==> Pushing commit and tags"
-git push origin HEAD
-git push origin "${TAG}"
+# 3️⃣ Fresh build (avoid old artifacts leaking into $DIST_DIR)
+rm -rf "$DIST_DIR"
+"./build-only.sh"
 
-echo "==> Creating GitHub release ${TAG}"
-# Attach zip (primary), and also raw DLL/EXE for convenience
-ASSETS="${ZIP_PATH}"
-[ -f "${DLL_PATH}" ] && ASSETS="${ASSETS} ${DLL_PATH}"
-[ -f "${EXE_PATH}" ] && ASSETS="${ASSETS} ${EXE_PATH}"
+# 4️⃣ Collect release assets
+ASSETS=()
+while IFS= read -r -d '' f; do ASSETS+=("$f"); done < <(find "$DIST_DIR" -maxdepth 1 -type f -print0)
 
-# shellcheck disable=SC2086
-gh release create "${TAG}" ${ASSETS} \
-  --repo "${REPO_SLUG}" \
-  --title "${CRATE_NAME} ${TAG}" \
-  --notes "${NOTES}"
+# 5️⃣ Publish GitHub release
+gh release create "$TAG" "${ASSETS[@]}" \
+  --title "$PROJECT_NAME $NEW_VERSION" \
+  --generate-notes
 
-echo "==> Done: https://github.com/${REPO_SLUG}/releases/tag/${TAG}"
+echo "✅ Published $TAG"

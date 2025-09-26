@@ -1,64 +1,43 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 set -euo pipefail
 
 # Load settings
-. "$(dirname "$0")/build-setting.sh"
+. "$(dirname "$0")/build-settings.sh"
 
 echo "==> Ensuring target '${TARGET_TRIPLE}' is installed"
 rustup target add "${TARGET_TRIPLE}" >/dev/null
 
-echo "==> Building (target=${TARGET_TRIPLE}, profile=${PROFILE})"
-cargo build --target "${TARGET_TRIPLE}" --${PROFILE}
+# 1) Build LIB (DLL) first
+echo "==> Building LIB (DLL) only: target=${TARGET_TRIPLE}, profile=${PROFILE}"
+cargo build --target "${TARGET_TRIPLE}" --${PROFILE} --lib
 
-# Check artifacts
-[ -f "${DLL_PATH}" ] || { echo "ERR: DLL not found: ${DLL_PATH}"; exit 1; }
-[ -f "${EXE_PATH}" ] || { echo "ERR: EXE not found: ${EXE_PATH}"; exit 1; }
+# Check DLL
+[ -f "${DLL_PATH}" ] || { echo "ERR: DLL not found after lib build: ${DLL_PATH}"; exit 1; }
 
-echo "==> Preparing bundle at ${BUNDLE_DIR}"
-rm -rf "${BUNDLE_DIR}" "${ZIP_PATH}"
-mkdir -p "${BUNDLE_DIR}"
+# Prepare bin/
+echo "==> Ensuring ./${BIN_DIR} exists"
+mkdir -p "${BIN_DIR}"
 
-# Copy artifacts
-cp "${DLL_PATH}" "${BUNDLE_DIR}/"
-cp "${EXE_PATH}" "${BUNDLE_DIR}/"
+# Copy DLL into ./bin so installer can include_bytes! it at compile-time
+cp -f "${DLL_PATH}" "${BIN_DIR}/"
+echo "==> Copied DLL to ${BIN_DIR}/$(basename "${DLL_PATH}")"
 
-# Optional PDBs (if present)
-[ -f "${PDB_DLL}" ] && cp "${PDB_DLL}" "${BUNDLE_DIR}/" || true
-[ -f "${PDB_EXE}" ] && cp "${PDB_EXE}" "${BUNDLE_DIR}/" || true
+# Optional PDB for DLL
+[ -f "${PDB_DLL}" ] && { cp -f "${PDB_DLL}" "${BIN_DIR}/"; echo "==> Copied PDB: $(basename "${PDB_DLL}")"; } || true
 
-# Add docs if present
-[ -f "README.md" ] && cp "README.md" "${BUNDLE_DIR}/" || true
-[ -f "LICENSE" ] && cp "LICENSE"   "${BUNDLE_DIR}/" || true
+# 2) Build installer (it expects DLL in ./bin at compile-time)
+echo "==> Building installer only (embeds ./bin/$(basename "${DLL_PATH}") via include_bytes!)"
+cargo build --target "${TARGET_TRIPLE}" --${PROFILE} --bin "${BIN_NAME}"
 
-# Version stamp
-printf '%s\n' "${VERSION}" > "${BUNDLE_DIR}/VERSION.txt"
+# Check EXE
+[ -f "${EXE_PATH}" ] || { echo "ERR: EXE not found after installer build: ${EXE_PATH}"; exit 1; }
 
-# Zip bundle
-echo "==> Creating ${ZIP_PATH}"
-mkdir -p "${DIST_DIR}"
-(
-  cd "${DIST_DIR}"
-  if command -v zip >/dev/null 2>&1; then
-    zip -r -9 "$(basename "${ZIP_PATH}")" "$(basename "${BUNDLE_DIR}")" >/dev/null
-  elif command -v 7z >/dev/null 2>&1; then
-    7z a -tzip "$(basename "${ZIP_PATH}")" "$(basename "${BUNDLE_DIR}")" >/dev/null
-  else
-    echo "ERR: neither 'zip' nor '7z' found. Install one of them."
-    exit 1
-  fi
-)
+# Copy EXE into ./bin
+cp -f "${EXE_PATH}" "${BIN_DIR}/"
+echo "==> Copied EXE to ${BIN_DIR}/$(basename "${EXE_PATH}")"
 
-# Checksums
-echo "==> Writing checksums"
-if command -v sha256sum >/dev/null 2>&1; then
-  sha256sum "${ZIP_PATH}" > "${ZIP_PATH}.sha256"
-elif command -v shasum >/dev/null 2>&1; then
-  shasum -a 256 "${ZIP_PATH}" > "${ZIP_PATH}.sha256"
-fi
+# Optional PDB for EXE
+[ -f "${PDB_EXE}" ] && { cp -f "${PDB_EXE}" "${BIN_DIR}/"; echo "==> Copied PDB: $(basename "${PDB_EXE}")"; } || true
 
-echo "==> Done"
-echo "Artifacts:"
-echo "  ${DLL_PATH}"
-echo "  ${EXE_PATH}"
-echo "  ${ZIP_PATH}"
-[ -f "${ZIP_PATH}.sha256" ] && echo "  ${ZIP_PATH}.sha256"
+echo "==> Done. Artifacts in ${BIN_DIR}/:"
+ls -l "${BIN_DIR}"
