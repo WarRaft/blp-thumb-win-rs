@@ -1,126 +1,152 @@
-use dialoguer::{Select, console::Term};
+#![cfg(windows)]
+
 use std::{
     env, fs, io,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
     thread::sleep,
     time::Duration,
 };
+
+use dialoguer::{Select, console::Term, theme::ColorfulTheme};
 use winreg::{RegKey, enums::*};
 
-// Вшитая DLL, ожидается в ./bin/blp_thumb_win.dll на момент компиляции инсталлера
+// The embedded DLL (you copy it to ./bin/ at build time)
 static DLL_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/bin/blp_thumb_win.dll"
 ));
 
-// Один источник правды из библиотеки
-use blp_thumb_win::keys::{
-    DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME, clsid_str, shell_thumb_handler_catid_str,
-};
+// Single source of truth (your lib exposes these):
+use blp_thumb_win::keys::{DEFAULT_EXT, FRIENDLY_NAME, clsid_str, shell_thumb_handler_catid_str};
 
 fn main() -> io::Result<()> {
     loop {
-        let items = &[
-            "Install (HKCU)",
-            "Uninstall (HKCU)",
-            "Status",
-            "Restart Explorer",
-            "Clear thumbnail cache",
-            "Exit",
-        ];
-        let sel = Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
-            .with_prompt("BLP Thumbnail Provider installer")
-            .items(items)
-            .default(0)
-            .interact_on_opt(&Term::stderr())
-            .unwrap_or(None);
-
-        match sel {
-            Some(0) => action_install()?,
-            Some(1) => action_uninstall()?,
-            Some(2) => action_status()?,
-            Some(3) => action_restart_explorer()?,
-            Some(4) => action_clear_thumb_cache()?,
-            _ => break,
+        match choose_action()? {
+            Action::Install => {
+                install()?;
+            }
+            Action::Uninstall => {
+                uninstall()?;
+            }
+            Action::Status => {
+                status()?;
+            }
+            Action::RestartExplorer => {
+                restart_explorer()?;
+            }
+            Action::ClearThumbCache => {
+                clear_thumb_cache()?;
+            }
+            Action::Exit => break,
         }
-
-        pause("Press Enter to return to menu…");
+        pause("\nPress Enter to return to menu...");
     }
     Ok(())
 }
 
-fn action_install() -> io::Result<()> {
+#[derive(Clone, Copy)]
+enum Action {
+    Install,
+    Uninstall,
+    Status,
+    RestartExplorer,
+    ClearThumbCache,
+    Exit,
+}
+
+fn choose_action() -> io::Result<Action> {
+    let items = [
+        "Install (current user)",
+        "Uninstall (current user)",
+        "Status",
+        "Restart Explorer",
+        "Clear thumbnail cache",
+        "Exit",
+    ];
+
+    let idx = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("BLP Thumbnail Provider installer")
+        .items(&items)
+        .default(0)
+        .interact_on(&Term::stdout())?;
+
+    Ok(match idx {
+        0 => Action::Install,
+        1 => Action::Uninstall,
+        2 => Action::Status,
+        3 => Action::RestartExplorer,
+        4 => Action::ClearThumbCache,
+        _ => Action::Exit,
+    })
+}
+
+/* ---------- Actions ---------- */
+
+fn install() -> io::Result<()> {
     let dll_path = materialize_embedded_dll()?;
     register_com(&dll_path)?;
-    println!("✅ Installed under HKCU.\nTip: use 'Restart Explorer' to refresh thumbnails.");
+    println!("Installed (HKCU). Use 'Restart Explorer' to refresh thumbnails.");
     Ok(())
 }
 
-fn action_uninstall() -> io::Result<()> {
+fn uninstall() -> io::Result<()> {
     unregister_com()?;
-    println!("✅ Uninstalled from HKCU.");
+    println!("Uninstalled (HKCU).");
     Ok(())
 }
 
-fn action_status() -> io::Result<()> {
-    let (ok_clsid, ok_inproc, ok_bind) = probe_status()?;
+fn status() -> io::Result<()> {
+    let (ok_clsid, ok_inproc, ok_bind_prog, ok_bind_ext) = probe_status()?;
     println!("Status:");
-    println!("  CLSID present:      {}", mark(ok_clsid));
-    println!("  InprocServer32:     {}", mark(ok_inproc));
-    println!("  ShellEx Thumbnail:  {}", mark(ok_bind));
+    println!("  CLSID key:             {}", mark(ok_clsid));
+    println!("  InprocServer32 value:  {}", mark(ok_inproc));
+    println!("  ShellEx bind (ProgID): {}", mark(ok_bind_prog));
+    println!("  ShellEx bind (Ext):    {}", mark(ok_bind_ext));
     Ok(())
 }
 
-fn action_restart_explorer() -> io::Result<()> {
-    // Закрыть explorer
+fn restart_explorer() -> io::Result<()> {
     let _ = Command::new("taskkill")
         .args(["/f", "/im", "explorer.exe"])
         .status();
-    // Небольшая пауза — пусть освободит файлы/кеш
     sleep(Duration::from_millis(400));
-    // Запустить explorer
     let _ = Command::new("explorer.exe").status();
-    println!("🔄 Explorer restarted.");
+    println!("Explorer restarted.");
     Ok(())
 }
 
-fn action_clear_thumb_cache() -> io::Result<()> {
-    // Лучше делать на остановленном explorer (можно через пункт меню выше)
-    let local = match env::var_os("LOCALAPPDATA") {
-        Some(v) => PathBuf::from(v),
-        None => {
-            println!("⚠️ LOCALAPPDATA not set, skipping.");
-            return Ok(());
-        }
+fn clear_thumb_cache() -> io::Result<()> {
+    let Some(local) = env::var_os("LOCALAPPDATA") else {
+        println!("LOCALAPPDATA is not set.");
+        return Ok(());
     };
-    let dir = local.join(r"Microsoft\Windows\Explorer");
+    let dir = PathBuf::from(local).join(r"Microsoft\Windows\Explorer");
     if !dir.is_dir() {
-        println!("ℹ️  No thumbnail cache dir: {}", dir.display());
+        println!("No thumbnail cache dir: {}", dir.display());
         return Ok(());
     }
-
     let mut removed = 0usize;
-    for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
-        let p = entry.path();
-        if !p.is_file() {
-            continue;
-        }
-        if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-            // thumbcache_* (обычно *.db)
-            if name.starts_with("thumbcache_") {
-                let _ = fs::remove_file(&p);
-                removed += 1;
+    for e in fs::read_dir(&dir)? {
+        let p = e?.path();
+        if p.is_file() {
+            if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                if name.starts_with("thumbcache_") {
+                    let _ = fs::remove_file(&p);
+                    removed += 1;
+                }
             }
         }
     }
-    println!("🧹 Removed {} cache files in {}", removed, dir.display());
+    println!("Removed {} files in {}", removed, dir.display());
     Ok(())
 }
 
-/// Сохраняем DLL рядом с профилем %LOCALAPPDATA%\blp-thumb-win\blp_thumb_win.dll
+/* ---------- Registry / files ---------- */
+
 fn materialize_embedded_dll() -> io::Result<PathBuf> {
+    // %LOCALAPPDATA%\blp-thumb-win\blp_thumb_win.dll (fallback — next to exe)
     let base = env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -144,99 +170,105 @@ fn normalize_ext(raw: &str) -> String {
     }
 }
 
-/// Регистрация: CLSID + Implemented Categories + ShellEx на ProgID (или .ext fallback)
+/// Register CLSID + Inproc + ShellEx mapping under HKCU.
+/// We do *not* change icons/ownership of the file type.
+/// We bind both under ProgID (if ext has one) and directly under the extension.
 fn register_com(dll_path: &Path) -> io::Result<()> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
 
-    let clsid = clsid_str(); // "{...}"
-    let catid = shell_thumb_handler_catid_str(); // "{e357...}"
+    let clsid = clsid_str();
+    let catid = shell_thumb_handler_catid_str();
+
+    // HKCU\Software\Classes\CLSID\{CLSID}
+    let (key_clsid, _) = hkcu.create_subkey(format!(r"Software\Classes\CLSID\{}", clsid))?;
+    key_clsid.set_value("", &FRIENDLY_NAME)?;
 
     // HKCU\Software\Classes\CLSID\{CLSID}\InprocServer32
-    let inproc_key = format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid);
-    let (key_inproc, _) = hkcu.create_subkey(inproc_key)?;
+    let (key_inproc, _) =
+        hkcu.create_subkey(format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid))?;
     key_inproc.set_value("", &dll_path.as_os_str())?;
-    key_inproc.set_value("ThreadingModel", &"Both")?;
+    // Thumbnail providers are typically Apartment threaded
+    key_inproc.set_value("ThreadingModel", &"Apartment")?;
 
-    // Friendly name
-    let clsid_key = format!(r"Software\Classes\CLSID\{}", clsid);
-    let (key_cls, _) = hkcu.create_subkey(clsid_key)?;
-    key_cls.set_value("", &FRIENDLY_NAME)?;
+    // Optional but harmless: mark as Approved (per-user)
+    let (approved, _) =
+        hkcu.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved")?;
+    approved.set_value(&clsid, &FRIENDLY_NAME)?;
 
-    // Implemented Categories
-    let implcat = format!(
+    // Implemented Categories (Thumbnail Provider)
+    let _ = hkcu.create_subkey(format!(
         r"Software\Classes\CLSID\{}\Implemented Categories\{}",
         clsid, catid
-    );
-    let _ = hkcu.create_subkey(implcat)?;
+    ))?;
 
-    // Привязка только ThumbnailProvider, не трогая иконку/ассоциацию
-    // Сначала пробуем повеситься на ProgID, иначе — на расширение
+    // Bind under ProgID if present, otherwise under extension key.
     let ext = normalize_ext(DEFAULT_EXT);
-    let progid = current_progid_of_ext(&ext).unwrap_or_else(|| DEFAULT_PROGID.to_string());
+    let progid_opt = current_progid_of_ext(&ext);
 
-    // HKCU\Software\Classes\<ProgID>\ShellEx\{catid} = {CLSID}
-    let (key_shellex, _) = hkcu.create_subkey(format!(r"Software\Classes\{}\ShellEx", progid))?;
-    let (key_thumb, _) = key_shellex.create_subkey(&catid)?;
-    key_thumb.set_value("", &clsid)?;
-
-    Ok(())
-}
-
-/// Дерегистрация: удаляем то, что создавали
-fn unregister_com() -> io::Result<()> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-
-    let clsid = clsid_str();
-    let catid = shell_thumb_handler_catid_str();
-    let ext = normalize_ext(DEFAULT_EXT);
-    let progid_guess = current_progid_of_ext(&ext);
-
-    // Удаляем привязку ShellEx либо с ProgID, либо с .ext
-    if let Some(pid) = progid_guess {
-        let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", pid, catid));
-    } else {
-        let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid));
+    if let Some(pid) = &progid_opt {
+        let (key_shellex, _) = hkcu.create_subkey(format!(r"Software\Classes\{}\ShellEx", pid))?;
+        let (key_thumb, _) = key_shellex.create_subkey(&catid)?;
+        key_thumb.set_value("", &clsid)?;
     }
 
-    // Удаляем CLSID ветку
-    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
+    // Always also bind under the extension itself (defensive)
+    let (key_ext_shellex, _) = hkcu.create_subkey(format!(r"Software\Classes\{}\ShellEx", ext))?;
+    let (key_ext_thumb, _) = key_ext_shellex.create_subkey(&catid)?;
+    key_ext_thumb.set_value("", &clsid)?;
 
     Ok(())
 }
 
-/// Проверка наличия ключей
-fn probe_status() -> io::Result<(bool, bool, bool)> {
+fn unregister_com() -> io::Result<()> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-
     let clsid = clsid_str();
     let catid = shell_thumb_handler_catid_str();
     let ext = normalize_ext(DEFAULT_EXT);
-    let progid_guess = current_progid_of_ext(&ext);
+    let progid_opt = current_progid_of_ext(&ext);
 
-    // CLSID
+    if let Some(pid) = &progid_opt {
+        let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", pid, catid));
+    }
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid));
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
+    let _ = hkcu
+        .open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
+            KEY_SET_VALUE,
+        )
+        .and_then(|k| k.delete_value(clsid));
+    Ok(())
+}
+
+fn probe_status() -> io::Result<(bool, bool, bool, bool)> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let clsid = clsid_str();
+    let catid = shell_thumb_handler_catid_str();
+    let ext = normalize_ext(DEFAULT_EXT);
+    let progid_opt = current_progid_of_ext(&ext);
+
     let ok_clsid = hkcu
         .open_subkey(format!(r"Software\Classes\CLSID\{}", clsid))
         .is_ok();
-    // Inproc
     let ok_inproc = hkcu
         .open_subkey(format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid))
         .is_ok();
 
-    // ShellEx bind present?
-    let ok_bind = if let Some(pid) = progid_guess {
+    let ok_prog = if let Some(pid) = &progid_opt {
         hkcu.open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", pid, catid))
             .is_ok()
     } else {
-        hkcu.open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid))
-            .is_ok()
+        false
     };
 
-    Ok((ok_clsid, ok_inproc, ok_bind))
+    let ok_ext = hkcu
+        .open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid))
+        .is_ok();
+
+    Ok((ok_clsid, ok_inproc, ok_prog, ok_ext))
 }
 
-/// Пытаемся прочитать текущий ProgID у расширения из HKCR
 fn current_progid_of_ext(ext: &str) -> Option<String> {
-    // читать из HKCR безопасно
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
     hkcr.open_subkey(ext)
         .ok()
@@ -244,13 +276,14 @@ fn current_progid_of_ext(ext: &str) -> Option<String> {
         .filter(|s| !s.trim().is_empty())
 }
 
-fn mark(b: bool) -> &'static str {
-    if b { "✔" } else { "—" }
-}
+/* ---------- utils ---------- */
 
 fn pause(msg: &str) {
-    use std::io::Write;
     print!("{msg}");
     let _ = io::stdout().flush();
-    let _ = io::stdin().read_line(&mut String::new());
+    let _ = io::stdin().read(&mut [0u8]).ok();
+}
+
+fn mark(b: bool) -> &'static str {
+    if b { "OK" } else { "NO" }
 }
