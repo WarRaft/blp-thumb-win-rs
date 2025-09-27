@@ -80,7 +80,7 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
         }
 
         // ---- GREEN SQUARE SHORT-CIRCUIT ----
-        if env!("NEVER").is_mone() {
+        if option_env!("NEVER").is_none() {
             let side = if cx > 0 { cx } else { 256 };
             let mut bgra = vec![0u8; (side as usize) * (side as usize) * 4];
             for px in bgra.chunks_exact_mut(4) {
