@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::keys::CLSID_BLP_THUMB;
 use blp::core::image::{ImageBlp, MAX_MIPS};
 
-use windows::Win32::Graphics::Gdi::HBITMAP;
+use windows::Win32::Graphics::Gdi::{BI_BITFIELDS, HBITMAP};
 
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_NOINTERFACE, E_POINTER, S_FALSE, S_OK};
 use windows::Win32::Graphics::Gdi::{
@@ -95,11 +95,6 @@ unsafe fn create_hbitmap_bgra_premul(
     use core::ffi::c_void;
     use core::mem::{size_of, zeroed};
     use core::ptr::copy_nonoverlapping;
-    use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG};
-    use windows::Win32::Graphics::Gdi::{
-        BI_BITFIELDS, BITMAPINFO, BITMAPV5HEADER, CreateDIBSection, DIB_RGB_COLORS, DeleteObject,
-        HBITMAP,
-    };
 
     // BITMAPV5HEADER под топ-даун 32bpp BGRA с альфой
     let mut v5: BITMAPV5HEADER = unsafe { zeroed() };
