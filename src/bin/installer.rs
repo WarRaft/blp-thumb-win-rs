@@ -2,49 +2,44 @@
 
 use std::{
     env, fs, io,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     thread::sleep,
     time::Duration,
 };
 
-use dialoguer::{Select, console::Term, theme::ColorfulTheme};
+use dialoguer::console::style;
+use dialoguer::theme::ColorfulTheme;
+use dialoguer::{Select, console::Term};
 use winreg::{RegKey, enums::*};
 
-// The embedded DLL (you copy it to ./bin/ at build time)
+// Embedded DLL that you copy into ./bin/ at build time.
+// The EXE will re-materialize it under %LOCALAPPDATA%\blp-thumb-win\
 static DLL_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/bin/blp_thumb_win.dll"
 ));
 
-// Single source of truth (your lib exposes these):
+// Single source of truth from the library (your keys module)
 use blp_thumb_win::keys::{DEFAULT_EXT, FRIENDLY_NAME, clsid_str, shell_thumb_handler_catid_str};
 
 fn main() -> io::Result<()> {
     loop {
         match choose_action()? {
-            Action::Install => {
-                install()?;
-            }
-            Action::Uninstall => {
-                uninstall()?;
-            }
-            Action::Status => {
-                status()?;
-            }
-            Action::RestartExplorer => {
-                restart_explorer()?;
-            }
-            Action::ClearThumbCache => {
-                clear_thumb_cache()?;
-            }
+            Action::Install => install()?,
+            Action::Uninstall => uninstall()?,
+            Action::Status => status()?,
+            Action::RestartExplorer => restart_explorer()?,
+            Action::ClearThumbCache => clear_thumb_cache()?,
             Action::Exit => break,
         }
-        pause("\nPress Enter to return to menu...");
+        pause("\nPress Enter to return to the menu...");
     }
     Ok(())
 }
+
+/* ---------- Menu ---------- */
 
 #[derive(Clone, Copy)]
 enum Action {
@@ -54,6 +49,20 @@ enum Action {
     RestartExplorer,
     ClearThumbCache,
     Exit,
+}
+
+fn menu_theme() -> ColorfulTheme {
+    // Force ASCII arrow; allow override via env MENU_ARROW if you ever need it.
+    let arrow = env::var("MENU_ARROW").unwrap_or_else(|_| ">".to_string());
+    let mut t = ColorfulTheme::default();
+    t.active_item_prefix = style(arrow.clone());
+    t.inactive_item_prefix = style(" ".to_string());
+    t.picked_item_prefix = style(arrow.clone());
+    t.unpicked_item_prefix = style(" ".to_string());
+    t.prompt_prefix = style(">".to_string());
+    t.success_prefix = style(">".to_string());
+    t.error_prefix = style("!".to_string());
+    t
 }
 
 fn choose_action() -> io::Result<Action> {
@@ -66,7 +75,7 @@ fn choose_action() -> io::Result<Action> {
         "Exit",
     ];
 
-    let idx = Select::with_theme(&ColorfulTheme::default())
+    let idx = Select::with_theme(&menu_theme())
         .with_prompt("BLP Thumbnail Provider installer")
         .items(&items)
         .default(0)
@@ -87,13 +96,13 @@ fn choose_action() -> io::Result<Action> {
 fn install() -> io::Result<()> {
     let dll_path = materialize_embedded_dll()?;
     register_com(&dll_path)?;
-    println!("Installed (HKCU). Use 'Restart Explorer' to refresh thumbnails.");
+    println!("Installed in HKCU. Use 'Restart Explorer' to refresh thumbnails.");
     Ok(())
 }
 
 fn uninstall() -> io::Result<()> {
     unregister_com()?;
-    println!("Uninstalled (HKCU).");
+    println!("Uninstalled from HKCU.");
     Ok(())
 }
 
@@ -108,11 +117,23 @@ fn status() -> io::Result<()> {
 }
 
 fn restart_explorer() -> io::Result<()> {
+    // Kill silently (no localized output); ignore errors if it's not running.
     let _ = Command::new("taskkill")
-        .args(["/f", "/im", "explorer.exe"])
+        .args(["/F", "/IM", "explorer.exe", "/T"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status();
-    sleep(Duration::from_millis(400));
-    let _ = Command::new("explorer.exe").status();
+
+    // Give the shell a moment to tear down.
+    sleep(Duration::from_millis(500));
+
+    // Start Explorer detached; return control immediately.
+    let _ = Command::new("explorer.exe")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
     println!("Explorer restarted.");
     Ok(())
 }
@@ -146,7 +167,7 @@ fn clear_thumb_cache() -> io::Result<()> {
 /* ---------- Registry / files ---------- */
 
 fn materialize_embedded_dll() -> io::Result<PathBuf> {
-    // %LOCALAPPDATA%\blp-thumb-win\blp_thumb_win.dll (fallback — next to exe)
+    // %LOCALAPPDATA%\blp-thumb-win\blp_thumb_win.dll (fallback: next to exe)
     let base = env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -171,13 +192,13 @@ fn normalize_ext(raw: &str) -> String {
 }
 
 /// Register CLSID + Inproc + ShellEx mapping under HKCU.
-/// We do *not* change icons/ownership of the file type.
-/// We bind both under ProgID (if ext has one) and directly under the extension.
+/// We do not change icons or file type ownership.
+/// We bind under ProgID (if present) and under the extension itself.
 fn register_com(dll_path: &Path) -> io::Result<()> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
 
-    let clsid = clsid_str();
-    let catid = shell_thumb_handler_catid_str();
+    let clsid = clsid_str(); // "{...}"
+    let catid = shell_thumb_handler_catid_str(); // "{e357...}"
 
     // HKCU\Software\Classes\CLSID\{CLSID}
     let (key_clsid, _) = hkcu.create_subkey(format!(r"Software\Classes\CLSID\{}", clsid))?;
@@ -187,10 +208,10 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
     let (key_inproc, _) =
         hkcu.create_subkey(format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid))?;
     key_inproc.set_value("", &dll_path.as_os_str())?;
-    // Thumbnail providers are typically Apartment threaded
+    // Thumbnail providers are typically Apartment threaded.
     key_inproc.set_value("ThreadingModel", &"Apartment")?;
 
-    // Optional but harmless: mark as Approved (per-user)
+    // Optional: mark as Approved (per-user)
     let (approved, _) =
         hkcu.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved")?;
     approved.set_value(&clsid, &FRIENDLY_NAME)?;
@@ -211,7 +232,7 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
         key_thumb.set_value("", &clsid)?;
     }
 
-    // Always also bind under the extension itself (defensive)
+    // Always also bind under the extension itself (defensive).
     let (key_ext_shellex, _) = hkcu.create_subkey(format!(r"Software\Classes\{}\ShellEx", ext))?;
     let (key_ext_thumb, _) = key_ext_shellex.create_subkey(&catid)?;
     key_ext_thumb.set_value("", &clsid)?;
@@ -268,6 +289,8 @@ fn probe_status() -> io::Result<(bool, bool, bool, bool)> {
     Ok((ok_clsid, ok_inproc, ok_prog, ok_ext))
 }
 
+/* ---------- Utils ---------- */
+
 fn current_progid_of_ext(ext: &str) -> Option<String> {
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
     hkcr.open_subkey(ext)
@@ -276,12 +299,12 @@ fn current_progid_of_ext(ext: &str) -> Option<String> {
         .filter(|s| !s.trim().is_empty())
 }
 
-/* ---------- utils ---------- */
-
 fn pause(msg: &str) {
     print!("{msg}");
     let _ = io::stdout().flush();
-    let _ = io::stdin().read(&mut [0u8]).ok();
+    // Use read_line to avoid printing localized messages from external tools
+    let mut _buf = String::new();
+    let _ = io::stdin().read_line(&mut _buf);
 }
 
 fn mark(b: bool) -> &'static str {
