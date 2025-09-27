@@ -53,13 +53,14 @@ enum Action {
 
 fn menu_theme() -> ColorfulTheme {
     // Force ASCII arrow; allow override via env MENU_ARROW if you ever need it.
-    let arrow = env::var("MENU_ARROW").unwrap_or_else(|_| ">".to_string());
     let mut t = ColorfulTheme::default();
-    t.active_item_prefix = style(arrow.clone());
+    t.active_item_prefix = style(">".to_string());
     t.inactive_item_prefix = style(" ".to_string());
-    t.picked_item_prefix = style(arrow.clone());
+    t.picked_item_prefix = style(">".to_string());
     t.unpicked_item_prefix = style(" ".to_string());
-    t.prompt_prefix = style(">".to_string());
+
+    t.prompt_prefix = style(">>".to_string());
+
     t.success_prefix = style(">".to_string());
     t.error_prefix = style("!".to_string());
     t
