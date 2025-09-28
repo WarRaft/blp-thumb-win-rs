@@ -391,8 +391,8 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
     log_cli("Register COM: creating CLSID key");
     let (key_clsid, _) = hkcu.create_subkey(format!(r"Software\Classes\CLSID\{}", clsid))?;
     key_clsid.set_value("", &FRIENDLY_NAME)?;
-    //log_cli("Register COM: setting DisableProcessIsolation=1");
-    //key_clsid.set_value("DisableProcessIsolation", &1u32)?;
+    log_cli("Register COM: setting DisableProcessIsolation=1");
+    key_clsid.set_value("DisableProcessIsolation", &1u32)?;
 
     // HKCU\Software\Classes\CLSID\{CLSID}\InprocServer32
     log_cli("Register COM: writing InprocServer32");
