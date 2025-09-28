@@ -301,10 +301,6 @@ fn clear_associations() -> io::Result<()> {
         r"Software\Classes\SystemFileAssociations\{}",
         ext
     ));
-    let _ = hkcu.delete_subkey_all(format!(
-        r"Software\Classes\SystemFileAssociations\image\ShellEx\{}",
-        catid
-    ));
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\WarRaft.BLP"));
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
     let _ = hkcu
@@ -461,12 +457,6 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
     let (key_sys_thumb, _) = key_sys_shellex.create_subkey(&catid)?;
     key_sys_thumb.set_value("", &clsid)?;
 
-    log_cli("Register COM: binding under SystemFileAssociations image");
-    let (key_img_shellex, _) = hkcu
-        .create_subkey(r"Software\Classes\SystemFileAssociations\image\ShellEx")?;
-    let (key_img_thumb, _) = key_img_shellex.create_subkey(&catid)?;
-    key_img_thumb.set_value("", &clsid)?;
-
     // Bind under Applications referenced in OpenWithList
     for entry in open_with_list_entries(&hkcu, &ext) {
         bind_application(&hkcu, &entry, &catid, &clsid)?;
@@ -513,12 +503,6 @@ fn unregister_com() -> io::Result<()> {
     let _ = hkcu.delete_subkey_all(format!(
         r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
         ext, catid
-    ));
-
-    log_cli("Unregister COM: removing SystemFileAssociations image binding");
-    let _ = hkcu.delete_subkey_all(format!(
-        r"Software\Classes\SystemFileAssociations\image\ShellEx\{}",
-        catid
     ));
 
     if let Ok(ext_key) =
