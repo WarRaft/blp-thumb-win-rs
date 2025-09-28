@@ -69,6 +69,7 @@ enum Action {
     Status,
     RestartExplorer,
     ClearThumbCache,
+    ClearAssociations,
     Exit,
 }
 
@@ -94,6 +95,7 @@ fn choose_action() -> io::Result<Action> {
         "Status",
         "Restart Explorer",
         "Clear thumbnail cache",
+        "Clear associations",
         "Exit",
     ];
 
@@ -109,6 +111,7 @@ fn choose_action() -> io::Result<Action> {
         2 => Action::Status,
         3 => Action::RestartExplorer,
         4 => Action::ClearThumbCache,
+        5 => Action::ClearAssociations,
         _ => Action::Exit,
     })
 }
@@ -121,6 +124,7 @@ impl Action {
             Action::Status => "Status",
             Action::RestartExplorer => "Restart Explorer",
             Action::ClearThumbCache => "Clear thumbnail cache",
+            Action::ClearAssociations => "Clear associations",
             Action::Exit => "Exit",
         }
     }
@@ -133,6 +137,7 @@ fn execute_action(action: Action) -> io::Result<()> {
         Action::Status => status(),
         Action::RestartExplorer => restart_explorer(),
         Action::ClearThumbCache => clear_thumb_cache(),
+        Action::ClearAssociations => clear_associations(),
         Action::Exit => Ok(()),
     }
 }
@@ -257,6 +262,54 @@ fn clear_thumb_cache() -> io::Result<()> {
         removed,
         dir.display()
     ));
+    Ok(())
+}
+
+fn clear_associations() -> io::Result<()> {
+    log_cli("Clear associations: start");
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let clsid = clsid_str();
+    let catid = shell_thumb_handler_catid_str();
+    let ext = normalize_ext(DEFAULT_EXT);
+
+    for entry in open_with_list_entries(&hkcu, &ext) {
+        remove_application_binding(&hkcu, &entry, &catid);
+    }
+    for progid in open_with_progids_entries(&hkcu, &ext) {
+        remove_prog_id_application(&hkcu, &progid, &catid);
+    }
+    if let Some(prog_id) = user_choice_prog_id(&hkcu, &ext) {
+        if let Some(app) = prog_id.strip_prefix("Applications\\") {
+            remove_application_binding(&hkcu, app, &catid);
+        } else {
+            remove_prog_id_application(&hkcu, &prog_id, &catid);
+        }
+        let _ = hkcu.delete_subkey_all(format!(
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{}\UserChoice",
+            ext
+        ));
+    }
+
+    let _ = hkcu.delete_subkey_all(format!(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{}",
+        ext
+    ));
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}", ext));
+    let _ = hkcu.delete_subkey_all(format!(
+        r"Software\Classes\SystemFileAssociations\{}",
+        ext
+    ));
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\WarRaft.BLP"));
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
+    let _ = hkcu
+        .open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
+            KEY_SET_VALUE,
+        )
+        .and_then(|k| k.delete_value(clsid));
+
+    log_cli("Clear associations: completed");
+    notify_shell_assoc("clear-assoc");
     Ok(())
 }
 
