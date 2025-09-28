@@ -43,7 +43,10 @@ fn main() -> io::Result<()> {
         }
 
         match execute_action(action) {
-            Ok(()) => log_cli(format!("Action '{}' completed successfully", action.title())),
+            Ok(()) => log_cli(format!(
+                "Action '{}' completed successfully",
+                action.title()
+            )),
             Err(err) => {
                 log_cli(format!("Action '{}' failed: {}", action.title(), err));
                 return Err(err);
@@ -75,9 +78,9 @@ fn menu_theme() -> ColorfulTheme {
     t.picked_item_prefix = style(">".to_string());
     t.unpicked_item_prefix = style(" ".to_string());
 
-    t.prompt_prefix = style(">>".to_string());
+    t.prompt_prefix = style("▶".to_string());
 
-    t.success_prefix = style(">".to_string());
+    t.success_prefix = style("→".to_string());
     t.error_prefix = style("!".to_string());
     t
 }
@@ -246,12 +249,22 @@ fn materialize_embedded_dll() -> io::Result<PathBuf> {
             p.pop();
             p
         });
-    log_cli(format!("Materialize DLL: base directory {}", base.display()));
+    log_cli(format!(
+        "Materialize DLL: base directory {}",
+        base.display()
+    ));
     let dir = base.join("blp-thumb-win");
-    log_cli(format!("Materialize DLL: ensuring directory {}", dir.display()));
+    log_cli(format!(
+        "Materialize DLL: ensuring directory {}",
+        dir.display()
+    ));
     fs::create_dir_all(&dir)?;
     let path = dir.join("blp_thumb_win.dll");
-    log_cli(format!("Materialize DLL: writing {} ({} bytes)", path.display(), DLL_BYTES.len()));
+    log_cli(format!(
+        "Materialize DLL: writing {} ({} bytes)",
+        path.display(),
+        DLL_BYTES.len()
+    ));
     fs::write(&path, DLL_BYTES)?;
     log_cli("Materialize DLL: completed");
     Ok(path)
@@ -338,7 +351,10 @@ fn unregister_com() -> io::Result<()> {
         log_cli(format!("Unregister COM: removing ProgID binding {}", pid));
         let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", pid, catid));
     }
-    log_cli(format!("Unregister COM: removing extension binding {}", ext));
+    log_cli(format!(
+        "Unregister COM: removing extension binding {}",
+        ext
+    ));
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid));
     log_cli("Unregister COM: removing CLSID keys");
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));

@@ -11,8 +11,8 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::keys::CLSID_BLP_THUMB;
 use blp::core::image::{ImageBlp, MAX_MIPS};
