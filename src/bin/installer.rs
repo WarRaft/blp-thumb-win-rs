@@ -78,9 +78,9 @@ fn menu_theme() -> ColorfulTheme {
     t.picked_item_prefix = style(">".to_string());
     t.unpicked_item_prefix = style(" ".to_string());
 
-    t.prompt_prefix = style("▶".to_string());
+    t.prompt_prefix = style("$".to_string());
 
-    t.success_prefix = style("→".to_string());
+    t.success_prefix = style(">".to_string());
     t.error_prefix = style("!".to_string());
     t
 }
@@ -180,21 +180,19 @@ fn restart_explorer() -> io::Result<()> {
     log_cli("Restart Explorer: terminating explorer.exe");
     // Kill silently (no localized output); ignore errors if it's not running.
     let _ = Command::new("taskkill")
-        .args(["/F", "/IM", "explorer.exe", "/T"])
+        .args(["/F", "/IM", "explorer.exe"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
 
     // Give the shell a moment to tear down.
-    sleep(Duration::from_millis(500));
+    sleep(Duration::from_millis(400));
 
     log_cli("Restart Explorer: launching explorer.exe");
-    // Start Explorer detached; return control immediately.
     let _ = Command::new("explorer.exe")
-        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
+        .status();
 
     println!("Explorer restarted.");
     log_cli("Restart Explorer: completed");
