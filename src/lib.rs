@@ -2,7 +2,11 @@ mod class_factory;
 pub mod keys;
 mod thumbnail_provider;
 
+use std::env;
 use std::ffi::c_void;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -10,6 +14,7 @@ use std::sync::Arc;
 use crate::keys::CLSID_BLP_THUMB;
 use blp::core::image::{ImageBlp, MAX_MIPS};
 
+use once_cell::sync::Lazy;
 use windows::Win32::Graphics::Gdi::{BI_BITFIELDS, HBITMAP};
 
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_NOINTERFACE, E_POINTER, S_FALSE, S_OK};
@@ -24,11 +29,53 @@ use windows::core::{GUID, HRESULT, IUnknown, Interface};
 const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x80040111u32 as i32);
 
 static DLL_LOCK_COUNT: AtomicU32 = AtomicU32::new(0);
+static DESKTOP_LOG_PATH: Lazy<Option<PathBuf>> = Lazy::new(desktop_log_path);
 
 #[derive(Default)]
 struct ProviderState {
     path_utf8: Option<String>,
     stream_data: Option<Arc<[u8]>>,
+}
+
+pub(crate) fn log_desktop(message: impl AsRef<str>) {
+    use chrono::Local;
+
+    let Some(path) = DESKTOP_LOG_PATH.as_ref() else {
+        return;
+    };
+
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        let _ = writeln!(file, "[{}] {}", timestamp, message.as_ref());
+    }
+}
+
+fn desktop_log_path() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(profile) = env::var_os("USERPROFILE") {
+        candidates.push(PathBuf::from(profile));
+    }
+    if let (Some(drive), Some(path)) = (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
+        let mut p = PathBuf::from(drive);
+        p.push(PathBuf::from(path));
+        candidates.push(p);
+    }
+    if let Some(home) = env::var_os("HOME") {
+        candidates.push(PathBuf::from(home));
+    }
+
+    for mut base in candidates {
+        base.push("Desktop");
+        base.push("blp-thumb-win.log");
+        return Some(base);
+    }
+
+    None
 }
 
 // ---- helpers: decode/resize/convert ----

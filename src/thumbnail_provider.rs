@@ -1,6 +1,6 @@
 use crate::{
-    create_hbitmap_bgra_premul, decode_blp_rgba, resize_fit_rgba, rgba_to_bgra_premul, DLL_LOCK_COUNT,
-    ProviderState,
+    create_hbitmap_bgra_premul, decode_blp_rgba, resize_fit_rgba, rgba_to_bgra_premul, log_desktop,
+    DLL_LOCK_COUNT, ProviderState,
 };
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
@@ -64,9 +64,12 @@ impl IInitializeWithItem_Impl for BlpThumbProvider_Impl {
                 ));
             }
             let s16 = widestring::U16CStr::from_ptr_str(pw.0);
+            let path = s16.to_string_lossy();
             let mut st = self.state.lock().unwrap();
-            st.path_utf8 = Some(s16.to_string_lossy());
+            st.path_utf8 = Some(path.clone());
             st.stream_data = None;
+            drop(st);
+            log_desktop(format!("IInitializeWithItem: path={}", path));
             // при желании: windows::Win32::System::Memory::CoTaskMemFree(Some(pw.0 as _));
         }
         Ok(())
@@ -86,14 +89,13 @@ impl IInitializeWithFile_Impl for BlpThumbProvider_Impl {
             return Err(windows::core::Error::from(E_FAIL));
         }
 
-        let path = unsafe {
-            widestring::U16CStr::from_ptr_str(psz_file_path.0)
-                .to_string_lossy()
-        };
+        let path = unsafe { widestring::U16CStr::from_ptr_str(psz_file_path.0).to_string_lossy() };
 
         let mut st = self.state.lock().unwrap();
-        st.path_utf8 = Some(path);
+        st.path_utf8 = Some(path.clone());
         st.stream_data = None;
+        drop(st);
+        log_desktop(format!("IInitializeWithFile: path={}", path));
         Ok(())
     }
 }
@@ -107,6 +109,8 @@ impl IInitializeWithStream_Impl for BlpThumbProvider_Impl {
     ) -> windows::core::Result<()> {
         use windows::Win32::Foundation::{E_FAIL, S_FALSE};
         use windows::core::Error;
+
+        log_desktop("IInitializeWithStream: begin");
 
         let stream: &IStream = pstream.ok()?;
 
@@ -130,6 +134,10 @@ impl IInitializeWithStream_Impl for BlpThumbProvider_Impl {
             };
 
             if hr.is_err() {
+                log_desktop(format!(
+                    "IInitializeWithStream: Read failed hr=0x{:08X}",
+                    hr.0 as u32
+                ));
                 return Err(Error::from(hr));
             }
 
@@ -142,13 +150,17 @@ impl IInitializeWithStream_Impl for BlpThumbProvider_Impl {
             }
         }
 
-        if data.is_empty() {
+        let data_len = data.len();
+        if data_len == 0 {
+            log_desktop("IInitializeWithStream: stream empty");
             return Err(Error::from(E_FAIL));
         }
 
         let mut st = self.state.lock().unwrap();
         st.path_utf8 = None;
         st.stream_data = Some(Arc::from(data));
+        drop(st);
+        log_desktop(format!("IInitializeWithStream: cached {} bytes", data_len));
         Ok(())
     }
 }
@@ -168,6 +180,8 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
             return Err(Error::from(E_POINTER));
         }
 
+        log_desktop(format!("GetThumbnail: start (cx={})", cx));
+
         // ---- GREEN SQUARE SHORT-CIRCUIT ----
         if option_env!("NEVER").is_none() {
             let side = if cx > 0 { cx } else { 256 };
@@ -184,6 +198,7 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
                 *phbmp = hbmp;
                 *pdwalpha = WTSAT_ARGB;
             }
+            log_desktop("GetThumbnail: returned diagnostic green square");
             return Ok(());
         }
         // ------------------------------------
@@ -194,21 +209,56 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
             (st.stream_data.clone(), st.path_utf8.clone())
         };
 
+        let using_stream = data_arc.is_some();
         let data_arc: Arc<[u8]> = if let Some(buf) = data_arc {
+            log_desktop(format!(
+                "GetThumbnail: using cached stream buffer ({} bytes)",
+                buf.len()
+            ));
             buf
         } else {
-            let path = path_opt.ok_or_else(|| Error::from(E_FAIL))?;
-            let raw = std::fs::read(path).map_err(|_| Error::from(E_FAIL))?;
+            let path = path_opt.ok_or_else(|| {
+                log_desktop("GetThumbnail: no stream and no path available");
+                Error::from(E_FAIL)
+            })?;
+            log_desktop(format!("GetThumbnail: reading from file {}", path));
+            let raw = std::fs::read(&path).map_err(|err| {
+                log_desktop(format!(
+                    "GetThumbnail: read failed for {} ({})",
+                    path,
+                    err
+                ));
+                Error::from(E_FAIL)
+            })?;
             Arc::from(raw)
         };
 
+        let data_len = data_arc.len();
+
         // читаем и декодим BLP → RGBA (mip0)
-        let (w, h, rgba) = decode_blp_rgba(&data_arc).map_err(|_| Error::from(E_FAIL))?;
+        let (w, h, rgba) = decode_blp_rgba(&data_arc).map_err(|_| {
+            log_desktop(format!(
+                "GetThumbnail: decode failed (source={}, bytes={})",
+                if using_stream { "stream" } else { "file" },
+                data_len
+            ));
+            Error::from(E_FAIL)
+        })?;
         let (tw, th, rgba_fit) = if cx > 0 && w.max(h) > cx {
             resize_fit_rgba(&rgba, w, h, cx)
         } else {
             (w, h, rgba)
         };
+
+        log_desktop(format!(
+            "GetThumbnail: decoded {}x{} -> {}x{} (stream={}, bytes={})",
+            w,
+            h,
+            tw,
+            th,
+            using_stream,
+            data_len
+        ));
 
         // RGBA → BGRA premultiplied
         let bgra_pm = rgba_to_bgra_premul(&rgba_fit);
@@ -220,6 +270,12 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
             *phbmp = hbmp;
             *pdwalpha = WTSAT_ARGB;
         }
+        log_desktop(format!(
+            "GetThumbnail: success ({}x{}, stream={})",
+            tw,
+            th,
+            using_stream
+        ));
         Ok(())
     }
 }
