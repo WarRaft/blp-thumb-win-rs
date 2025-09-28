@@ -7,6 +7,12 @@ set -euo pipefail
 echo "==> Ensuring target '${TARGET_TRIPLE}' is installed"
 rustup target add "${TARGET_TRIPLE}" >/dev/null
 
+# Clean previous bin artifacts to avoid stale bundles
+if [ -d "${BIN_DIR}" ]; then
+  echo "==> Removing existing ${BIN_DIR}/"
+  rm -rf "${BIN_DIR}"
+fi
+
 # 1) Build LIB (DLL) first
 echo "==> Building LIB (DLL) only: target=${TARGET_TRIPLE}, profile=${PROFILE}"
 cargo build --target "${TARGET_TRIPLE}" --${PROFILE} --lib

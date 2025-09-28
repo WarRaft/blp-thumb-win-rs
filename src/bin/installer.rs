@@ -10,6 +10,7 @@ use dialoguer::console::style;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Select, console::Term};
 use winreg::{RegKey, enums::*};
+use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
 
 // Embedded DLL that you copy into ./bin/ at build time.
 // The EXE will re-materialize it under %LOCALAPPDATA%\blp-thumb-win\
@@ -147,6 +148,7 @@ fn install() -> io::Result<()> {
     ));
     register_com(&dll_path)?;
     log_cli("Install: registry entries written");
+    notify_shell_assoc("install");
     println!("Installed in HKCU. Use 'Restart Explorer' to refresh thumbnails.");
     Ok(())
 }
@@ -155,6 +157,7 @@ fn uninstall() -> io::Result<()> {
     log_cli("Uninstall: start");
     unregister_com()?;
     log_cli("Uninstall: registry entries removed");
+    notify_shell_assoc("uninstall");
     println!("Uninstalled from HKCU.");
     Ok(())
 }
@@ -392,4 +395,14 @@ fn pause(msg: &str) {
 
 fn mark(b: bool) -> &'static str {
     if b { "OK" } else { "NO" }
+}
+
+fn notify_shell_assoc(reason: &str) {
+    log_cli(format!(
+        "Shell notify ({reason}): calling SHChangeNotify(SHCNE_ASSOCCHANGED)"
+    ));
+    unsafe {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+    }
+    log_cli("Shell notify: done");
 }
