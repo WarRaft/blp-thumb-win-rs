@@ -4,9 +4,6 @@ use std::{
     env, fs, io,
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    thread::sleep,
-    time::Duration,
 };
 
 use dialoguer::console::style;
@@ -22,9 +19,13 @@ static DLL_BYTES: &[u8] = include_bytes!(concat!(
 ));
 
 // Single source of truth from the library (your keys module)
+use crate::restart_explorer::restart_explorer;
 use blp_thumb_win::keys::{DEFAULT_EXT, FRIENDLY_NAME, clsid_str, shell_thumb_handler_catid_str};
 
-fn log_cli(message: impl Into<String>) {
+#[path = "installer/restart_explorer.rs"]
+mod restart_explorer;
+
+pub(crate) fn log_cli(message: impl Into<String>) {
     let text = message.into();
     if let Err(err) = blp_thumb_win::log_desktop(&text) {
         eprintln!("[log] cannot write '{}': {}", text, err);
@@ -173,29 +174,6 @@ fn status() -> io::Result<()> {
     println!("  InprocServer32 value:  {}", mark(ok_inproc));
     println!("  ShellEx bind (ProgID): {}", mark(ok_bind_prog));
     println!("  ShellEx bind (Ext):    {}", mark(ok_bind_ext));
-    Ok(())
-}
-
-fn restart_explorer() -> io::Result<()> {
-    log_cli("Restart Explorer: terminating explorer.exe");
-    // Kill silently (no localized output); ignore errors if it's not running.
-    let _ = Command::new("taskkill")
-        .args(["/F", "/IM", "explorer.exe"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-
-    // Give the shell a moment to tear down.
-    sleep(Duration::from_millis(400));
-
-    log_cli("Restart Explorer: launching explorer.exe");
-    let _ = Command::new("explorer.exe")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-
-    println!("Explorer restarted.");
-    log_cli("Restart Explorer: completed");
     Ok(())
 }
 
