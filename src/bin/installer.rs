@@ -21,7 +21,9 @@ static DLL_BYTES: &[u8] = include_bytes!(concat!(
 
 // Single source of truth from the library (your keys module)
 use crate::restart_explorer::restart_explorer;
-use blp_thumb_win::keys::{DEFAULT_EXT, FRIENDLY_NAME, clsid_str, shell_thumb_handler_catid_str};
+use blp_thumb_win::keys::{
+    DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME, clsid_str, shell_thumb_handler_catid_str,
+};
 
 #[path = "installer/restart_explorer.rs"]
 mod restart_explorer;
@@ -299,6 +301,10 @@ fn clear_associations() -> io::Result<()> {
         r"Software\Classes\SystemFileAssociations\{}",
         ext
     ));
+    let _ = hkcu.delete_subkey_all(format!(
+        r"Software\Classes\SystemFileAssociations\image\ShellEx\{}",
+        catid
+    ));
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\WarRaft.BLP"));
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
     let _ = hkcu
@@ -413,15 +419,31 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
     }
     ext_key.set_value("PerceivedType", &"image")?;
 
-    // Bind under ProgID if present, otherwise under extension key.
-    let progid_opt = current_progid_of_ext(&ext);
-
-    if let Some(pid) = &progid_opt {
-        log_cli(format!("Register COM: binding under ProgID {}", pid));
-        let (key_shellex, _) = hkcu.create_subkey(format!(r"Software\Classes\{}\ShellEx", pid))?;
-        let (key_thumb, _) = key_shellex.create_subkey(&catid)?;
-        key_thumb.set_value("", &clsid)?;
+    match ext_key.get_value::<String, _>("") {
+        Ok(existing) if !existing.trim_matches(char::from(0)).is_empty() => {
+            log_cli(format!(
+                "Register COM: extension default already set to {}",
+                existing
+            ));
+        }
+        _ => {
+            log_cli("Register COM: setting extension default to WarRaft.BLP");
+            ext_key.set_value("", &DEFAULT_PROGID)?;
+        }
     }
+
+    log_cli("Register COM: ensuring ProgID key WarRaft.BLP");
+    let (progid_key, _) = hkcu.create_subkey(format!(r"Software\Classes\{}", DEFAULT_PROGID))?;
+    if progid_key
+        .get_value::<String, _>("")
+        .map(|s| s.trim_matches(char::from(0)).is_empty())
+        .unwrap_or(true)
+    {
+        progid_key.set_value("", &FRIENDLY_NAME)?;
+    }
+    let (pid_shellex, _) = progid_key.create_subkey("ShellEx")?;
+    let (pid_thumb, _) = pid_shellex.create_subkey(&catid)?;
+    pid_thumb.set_value("", &clsid)?;
 
     // Bind under the extension itself.
     log_cli(format!("Register COM: binding under extension {}", ext));
@@ -434,12 +456,16 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
         "Register COM: binding under SystemFileAssociations {}",
         ext
     ));
-    let (key_sys_shellex, _) = hkcu.create_subkey(format!(
-        r"Software\Classes\SystemFileAssociations\{}\ShellEx",
-        ext
-    ))?;
+    let (key_sys_shellex, _) = hkcu
+        .create_subkey(format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx", ext))?;
     let (key_sys_thumb, _) = key_sys_shellex.create_subkey(&catid)?;
     key_sys_thumb.set_value("", &clsid)?;
+
+    log_cli("Register COM: binding under SystemFileAssociations image");
+    let (key_img_shellex, _) = hkcu
+        .create_subkey(r"Software\Classes\SystemFileAssociations\image\ShellEx")?;
+    let (key_img_thumb, _) = key_img_shellex.create_subkey(&catid)?;
+    key_img_thumb.set_value("", &clsid)?;
 
     // Bind under Applications referenced in OpenWithList
     for entry in open_with_list_entries(&hkcu, &ext) {
@@ -489,6 +515,12 @@ fn unregister_com() -> io::Result<()> {
         ext, catid
     ));
 
+    log_cli("Unregister COM: removing SystemFileAssociations image binding");
+    let _ = hkcu.delete_subkey_all(format!(
+        r"Software\Classes\SystemFileAssociations\image\ShellEx\{}",
+        catid
+    ));
+
     if let Ok(ext_key) =
         hkcu.open_subkey_with_flags(format!(r"Software\Classes\{}", ext), KEY_SET_VALUE)
     {
@@ -514,6 +546,7 @@ fn unregister_com() -> io::Result<()> {
     }
     log_cli("Unregister COM: removing CLSID keys");
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}", DEFAULT_PROGID));
     let _ = hkcu
         .open_subkey_with_flags(
             r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
