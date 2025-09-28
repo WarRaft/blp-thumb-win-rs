@@ -69,7 +69,7 @@ impl IInitializeWithItem_Impl for BlpThumbProvider_Impl {
             st.path_utf8 = Some(path.clone());
             st.stream_data = None;
             drop(st);
-            log_desktop(format!("IInitializeWithItem: path={}", path));
+            let _ = log_desktop(format!("IInitializeWithItem: path={}", path));
             // при желании: windows::Win32::System::Memory::CoTaskMemFree(Some(pw.0 as _));
         }
         Ok(())
@@ -95,7 +95,7 @@ impl IInitializeWithFile_Impl for BlpThumbProvider_Impl {
         st.path_utf8 = Some(path.clone());
         st.stream_data = None;
         drop(st);
-        log_desktop(format!("IInitializeWithFile: path={}", path));
+        let _ = log_desktop(format!("IInitializeWithFile: path={}", path));
         Ok(())
     }
 }
@@ -110,7 +110,7 @@ impl IInitializeWithStream_Impl for BlpThumbProvider_Impl {
         use windows::Win32::Foundation::{E_FAIL, S_FALSE};
         use windows::core::Error;
 
-        log_desktop("IInitializeWithStream: begin");
+        let _ = log_desktop("IInitializeWithStream: begin");
 
         let stream: &IStream = pstream.ok()?;
 
@@ -134,7 +134,7 @@ impl IInitializeWithStream_Impl for BlpThumbProvider_Impl {
             };
 
             if hr.is_err() {
-                log_desktop(format!(
+                let _ = log_desktop(format!(
                     "IInitializeWithStream: Read failed hr=0x{:08X}",
                     hr.0 as u32
                 ));
@@ -152,7 +152,7 @@ impl IInitializeWithStream_Impl for BlpThumbProvider_Impl {
 
         let data_len = data.len();
         if data_len == 0 {
-            log_desktop("IInitializeWithStream: stream empty");
+            let _ = log_desktop("IInitializeWithStream: stream empty");
             return Err(Error::from(E_FAIL));
         }
 
@@ -160,7 +160,7 @@ impl IInitializeWithStream_Impl for BlpThumbProvider_Impl {
         st.path_utf8 = None;
         st.stream_data = Some(Arc::from(data));
         drop(st);
-        log_desktop(format!("IInitializeWithStream: cached {} bytes", data_len));
+        let _ = log_desktop(format!("IInitializeWithStream: cached {} bytes", data_len));
         Ok(())
     }
 }
@@ -180,7 +180,7 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
             return Err(Error::from(E_POINTER));
         }
 
-        log_desktop(format!("GetThumbnail: start (cx={})", cx));
+        let _ = log_desktop(format!("GetThumbnail: start (cx={})", cx));
 
         // ---- GREEN SQUARE SHORT-CIRCUIT ----
         if option_env!("NEVER").is_none() {
@@ -198,7 +198,7 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
                 *phbmp = hbmp;
                 *pdwalpha = WTSAT_ARGB;
             }
-            log_desktop("GetThumbnail: returned diagnostic green square");
+            let _ = log_desktop("GetThumbnail: returned diagnostic green square");
             return Ok(());
         }
         // ------------------------------------
@@ -211,19 +211,19 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
 
         let using_stream = data_arc.is_some();
         let data_arc: Arc<[u8]> = if let Some(buf) = data_arc {
-            log_desktop(format!(
+            let _ = log_desktop(format!(
                 "GetThumbnail: using cached stream buffer ({} bytes)",
                 buf.len()
             ));
             buf
         } else {
             let path = path_opt.ok_or_else(|| {
-                log_desktop("GetThumbnail: no stream and no path available");
+                let _ = log_desktop("GetThumbnail: no stream and no path available");
                 Error::from(E_FAIL)
             })?;
-            log_desktop(format!("GetThumbnail: reading from file {}", path));
+            let _ = log_desktop(format!("GetThumbnail: reading from file {}", path));
             let raw = std::fs::read(&path).map_err(|err| {
-                log_desktop(format!(
+                let _ = log_desktop(format!(
                     "GetThumbnail: read failed for {} ({})",
                     path,
                     err
@@ -237,7 +237,7 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
 
         // читаем и декодим BLP → RGBA (mip0)
         let (w, h, rgba) = decode_blp_rgba(&data_arc).map_err(|_| {
-            log_desktop(format!(
+            let _ = log_desktop(format!(
                 "GetThumbnail: decode failed (source={}, bytes={})",
                 if using_stream { "stream" } else { "file" },
                 data_len
@@ -250,7 +250,7 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
             (w, h, rgba)
         };
 
-        log_desktop(format!(
+        let _ = log_desktop(format!(
             "GetThumbnail: decoded {}x{} -> {}x{} (stream={}, bytes={})",
             w,
             h,
@@ -270,7 +270,7 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
             *phbmp = hbmp;
             *pdwalpha = WTSAT_ARGB;
         }
-        log_desktop(format!(
+        let _ = log_desktop(format!(
             "GetThumbnail: success ({}x{}, stream={})",
             tw,
             th,

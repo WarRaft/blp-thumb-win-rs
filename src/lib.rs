@@ -2,6 +2,9 @@ mod class_factory;
 pub mod keys;
 mod thumbnail_provider;
 
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("blp-thumb-win must be built for 64-bit targets");
+
 use std::env;
 use std::ffi::c_void;
 use std::fs::OpenOptions;
@@ -29,7 +32,7 @@ use windows::core::{GUID, HRESULT, IUnknown, Interface};
 const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x80040111u32 as i32);
 
 static DLL_LOCK_COUNT: AtomicU32 = AtomicU32::new(0);
-static DESKTOP_LOG_PATH: Lazy<Option<PathBuf>> = Lazy::new(desktop_log_path);
+static DESKTOP_LOG_PATH: Lazy<Result<PathBuf, String>> = Lazy::new(desktop_log_path);
 
 #[derive(Default)]
 struct ProviderState {
@@ -37,24 +40,33 @@ struct ProviderState {
     stream_data: Option<Arc<[u8]>>,
 }
 
-pub(crate) fn log_desktop(message: impl AsRef<str>) {
+pub fn log_desktop(message: impl AsRef<str>) -> Result<(), String> {
     use chrono::Local;
 
-    let Some(path) = DESKTOP_LOG_PATH.as_ref() else {
-        return;
-    };
+    let path = DESKTOP_LOG_PATH
+        .as_ref()
+        .map_err(|err| err.clone())?
+        .clone();
 
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {}", parent.display(), e))?;
     }
 
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-        let _ = writeln!(file, "[{}] {}", timestamp, message.as_ref());
-    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("failed to open {}: {}", path.display(), e))?;
+
+    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    writeln!(file, "[{}] {}", timestamp, message.as_ref())
+        .map_err(|e| format!("failed to write to {}: {}", path.display(), e))?;
+
+    Ok(())
 }
 
-fn desktop_log_path() -> Option<PathBuf> {
+fn desktop_log_path() -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
 
     if let Some(profile) = env::var_os("USERPROFILE") {
@@ -72,10 +84,10 @@ fn desktop_log_path() -> Option<PathBuf> {
     for mut base in candidates {
         base.push("Desktop");
         base.push("blp-thumb-win.log");
-        return Some(base);
+        return Ok(base);
     }
 
-    None
+    Err("unable to locate Desktop path via USERPROFILE/HOMEPATH/HOME".to_string())
 }
 
 // ---- helpers: decode/resize/convert ----

@@ -24,16 +24,32 @@ static DLL_BYTES: &[u8] = include_bytes!(concat!(
 // Single source of truth from the library (your keys module)
 use blp_thumb_win::keys::{DEFAULT_EXT, FRIENDLY_NAME, clsid_str, shell_thumb_handler_catid_str};
 
+fn log_cli(message: impl Into<String>) {
+    let text = message.into();
+    if let Err(err) = blp_thumb_win::log_desktop(&text) {
+        eprintln!("[log] cannot write '{}': {}", text, err);
+    }
+}
+
 fn main() -> io::Result<()> {
+    log_cli("Installer started");
     loop {
-        match choose_action()? {
-            Action::Install => install()?,
-            Action::Uninstall => uninstall()?,
-            Action::Status => status()?,
-            Action::RestartExplorer => restart_explorer()?,
-            Action::ClearThumbCache => clear_thumb_cache()?,
-            Action::Exit => break,
+        let action = choose_action()?;
+        log_cli(format!("Menu selection: {}", action.title()));
+
+        if action == Action::Exit {
+            log_cli("Installer exiting");
+            break;
         }
+
+        match execute_action(action) {
+            Ok(()) => log_cli(format!("Action '{}' completed successfully", action.title())),
+            Err(err) => {
+                log_cli(format!("Action '{}' failed: {}", action.title(), err));
+                return Err(err);
+            }
+        }
+
         pause("\nPress Enter to return to the menu...");
     }
     Ok(())
@@ -41,7 +57,7 @@ fn main() -> io::Result<()> {
 
 /* ---------- Menu ---------- */
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     Install,
     Uninstall,
@@ -92,23 +108,63 @@ fn choose_action() -> io::Result<Action> {
     })
 }
 
+impl Action {
+    fn title(self) -> &'static str {
+        match self {
+            Action::Install => "Install (current user)",
+            Action::Uninstall => "Uninstall (current user)",
+            Action::Status => "Status",
+            Action::RestartExplorer => "Restart Explorer",
+            Action::ClearThumbCache => "Clear thumbnail cache",
+            Action::Exit => "Exit",
+        }
+    }
+}
+
+fn execute_action(action: Action) -> io::Result<()> {
+    match action {
+        Action::Install => install(),
+        Action::Uninstall => uninstall(),
+        Action::Status => status(),
+        Action::RestartExplorer => restart_explorer(),
+        Action::ClearThumbCache => clear_thumb_cache(),
+        Action::Exit => Ok(()),
+    }
+}
+
 /* ---------- Actions ---------- */
 
 fn install() -> io::Result<()> {
+    log_cli("Install: start");
     let dll_path = materialize_embedded_dll()?;
+    log_cli(format!(
+        "Install: DLL materialized to {}",
+        dll_path.display()
+    ));
     register_com(&dll_path)?;
+    log_cli("Install: registry entries written");
     println!("Installed in HKCU. Use 'Restart Explorer' to refresh thumbnails.");
     Ok(())
 }
 
 fn uninstall() -> io::Result<()> {
+    log_cli("Uninstall: start");
     unregister_com()?;
+    log_cli("Uninstall: registry entries removed");
     println!("Uninstalled from HKCU.");
     Ok(())
 }
 
 fn status() -> io::Result<()> {
+    log_cli("Status: probing");
     let (ok_clsid, ok_inproc, ok_bind_prog, ok_bind_ext) = probe_status()?;
+    log_cli(format!(
+        "Status results -> CLSID: {}, Inproc: {}, ProgID bind: {}, Ext bind: {}",
+        mark(ok_clsid),
+        mark(ok_inproc),
+        mark(ok_bind_prog),
+        mark(ok_bind_ext)
+    ));
     println!("Status:");
     println!("  CLSID key:             {}", mark(ok_clsid));
     println!("  InprocServer32 value:  {}", mark(ok_inproc));
@@ -118,6 +174,7 @@ fn status() -> io::Result<()> {
 }
 
 fn restart_explorer() -> io::Result<()> {
+    log_cli("Restart Explorer: terminating explorer.exe");
     // Kill silently (no localized output); ignore errors if it's not running.
     let _ = Command::new("taskkill")
         .args(["/F", "/IM", "explorer.exe", "/T"])
@@ -128,6 +185,7 @@ fn restart_explorer() -> io::Result<()> {
     // Give the shell a moment to tear down.
     sleep(Duration::from_millis(500));
 
+    log_cli("Restart Explorer: launching explorer.exe");
     // Start Explorer detached; return control immediately.
     let _ = Command::new("explorer.exe")
         .stdin(Stdio::null())
@@ -136,17 +194,24 @@ fn restart_explorer() -> io::Result<()> {
         .spawn();
 
     println!("Explorer restarted.");
+    log_cli("Restart Explorer: completed");
     Ok(())
 }
 
 fn clear_thumb_cache() -> io::Result<()> {
+    log_cli("Clear cache: start");
     let Some(local) = env::var_os("LOCALAPPDATA") else {
         println!("LOCALAPPDATA is not set.");
+        log_cli("Clear cache: LOCALAPPDATA not set");
         return Ok(());
     };
     let dir = PathBuf::from(local).join(r"Microsoft\Windows\Explorer");
     if !dir.is_dir() {
         println!("No thumbnail cache dir: {}", dir.display());
+        log_cli(format!(
+            "Clear cache: directory {} not found",
+            dir.display()
+        ));
         return Ok(());
     }
     let mut removed = 0usize;
@@ -162,6 +227,11 @@ fn clear_thumb_cache() -> io::Result<()> {
         }
     }
     println!("Removed {} files in {}", removed, dir.display());
+    log_cli(format!(
+        "Clear cache: removed {} files from {}",
+        removed,
+        dir.display()
+    ));
     Ok(())
 }
 
@@ -176,10 +246,14 @@ fn materialize_embedded_dll() -> io::Result<PathBuf> {
             p.pop();
             p
         });
+    log_cli(format!("Materialize DLL: base directory {}", base.display()));
     let dir = base.join("blp-thumb-win");
+    log_cli(format!("Materialize DLL: ensuring directory {}", dir.display()));
     fs::create_dir_all(&dir)?;
     let path = dir.join("blp_thumb_win.dll");
+    log_cli(format!("Materialize DLL: writing {} ({} bytes)", path.display(), DLL_BYTES.len()));
     fs::write(&path, DLL_BYTES)?;
+    log_cli("Materialize DLL: completed");
     Ok(path)
 }
 
@@ -196,16 +270,21 @@ fn normalize_ext(raw: &str) -> String {
 /// We do not change icons or file type ownership.
 /// We bind under ProgID (if present) and under the extension itself.
 fn register_com(dll_path: &Path) -> io::Result<()> {
+    log_cli(format!("Register COM: start (dll={})", dll_path.display()));
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
 
     let clsid = clsid_str(); // "{...}"
     let catid = shell_thumb_handler_catid_str(); // "{e357...}"
 
     // HKCU\Software\Classes\CLSID\{CLSID}
+    log_cli("Register COM: creating CLSID key");
     let (key_clsid, _) = hkcu.create_subkey(format!(r"Software\Classes\CLSID\{}", clsid))?;
     key_clsid.set_value("", &FRIENDLY_NAME)?;
+    log_cli("Register COM: setting DisableProcessIsolation=1");
+    key_clsid.set_value("DisableProcessIsolation", &1u32)?;
 
     // HKCU\Software\Classes\CLSID\{CLSID}\InprocServer32
+    log_cli("Register COM: writing InprocServer32");
     let (key_inproc, _) =
         hkcu.create_subkey(format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid))?;
     key_inproc.set_value("", &dll_path.as_os_str())?;
@@ -213,11 +292,13 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
     key_inproc.set_value("ThreadingModel", &"Apartment")?;
 
     // Optional: mark as Approved (per-user)
+    log_cli("Register COM: marking extension as approved");
     let (approved, _) =
         hkcu.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved")?;
     approved.set_value(&clsid, &FRIENDLY_NAME)?;
 
     // Implemented Categories (Thumbnail Provider)
+    log_cli("Register COM: setting Implemented Categories");
     let _ = hkcu.create_subkey(format!(
         r"Software\Classes\CLSID\{}\Implemented Categories\{}",
         clsid, catid
@@ -228,20 +309,25 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
     let progid_opt = current_progid_of_ext(&ext);
 
     if let Some(pid) = &progid_opt {
+        log_cli(format!("Register COM: binding under ProgID {}", pid));
         let (key_shellex, _) = hkcu.create_subkey(format!(r"Software\Classes\{}\ShellEx", pid))?;
         let (key_thumb, _) = key_shellex.create_subkey(&catid)?;
         key_thumb.set_value("", &clsid)?;
     }
 
     // Always also bind under the extension itself (defensive).
+    log_cli(format!("Register COM: binding under extension {}", ext));
     let (key_ext_shellex, _) = hkcu.create_subkey(format!(r"Software\Classes\{}\ShellEx", ext))?;
     let (key_ext_thumb, _) = key_ext_shellex.create_subkey(&catid)?;
     key_ext_thumb.set_value("", &clsid)?;
+
+    log_cli("Register COM: completed");
 
     Ok(())
 }
 
 fn unregister_com() -> io::Result<()> {
+    log_cli("Unregister COM: start");
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let clsid = clsid_str();
     let catid = shell_thumb_handler_catid_str();
@@ -249,9 +335,12 @@ fn unregister_com() -> io::Result<()> {
     let progid_opt = current_progid_of_ext(&ext);
 
     if let Some(pid) = &progid_opt {
+        log_cli(format!("Unregister COM: removing ProgID binding {}", pid));
         let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", pid, catid));
     }
+    log_cli(format!("Unregister COM: removing extension binding {}", ext));
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid));
+    log_cli("Unregister COM: removing CLSID keys");
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
     let _ = hkcu
         .open_subkey_with_flags(
@@ -259,6 +348,7 @@ fn unregister_com() -> io::Result<()> {
             KEY_SET_VALUE,
         )
         .and_then(|k| k.delete_value(clsid));
+    log_cli("Unregister COM: completed");
     Ok(())
 }
 
