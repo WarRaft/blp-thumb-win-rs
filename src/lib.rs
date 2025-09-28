@@ -3,9 +3,9 @@ pub mod keys;
 mod thumbnail_provider;
 
 use std::ffi::c_void;
-use std::mem::zeroed;
-use std::ptr::{copy_nonoverlapping, null_mut};
+use std::ptr::null_mut;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 use crate::keys::CLSID_BLP_THUMB;
 use blp::core::image::{ImageBlp, MAX_MIPS};
@@ -28,6 +28,7 @@ static DLL_LOCK_COUNT: AtomicU32 = AtomicU32::new(0);
 #[derive(Default)]
 struct ProviderState {
     path_utf8: Option<String>,
+    stream_data: Option<Arc<[u8]>>,
 }
 
 // ---- helpers: decode/resize/convert ----

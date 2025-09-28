@@ -19,7 +19,9 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
         ppv: *mut *mut c_void,
     ) -> windows::core::Result<()> {
         use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER};
-        use windows::Win32::UI::Shell::{IInitializeWithItem, IThumbnailProvider};
+        use windows::Win32::UI::Shell::{
+            IInitializeWithFile, IInitializeWithItem, IInitializeWithStream, IThumbnailProvider,
+        };
         use windows::core::{Error, IUnknown, Interface};
 
         if ppv.is_null() || riid.is_null() {
@@ -38,6 +40,14 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
             }
             if *riid == <IInitializeWithItem as Interface>::IID {
                 *ppv = unk.cast::<IInitializeWithItem>()?.into_raw();
+                return Ok(());
+            }
+            if *riid == <IInitializeWithStream as Interface>::IID {
+                *ppv = unk.cast::<IInitializeWithStream>()?.into_raw();
+                return Ok(());
+            }
+            if *riid == <IInitializeWithFile as Interface>::IID {
+                *ppv = unk.cast::<IInitializeWithFile>()?.into_raw();
                 return Ok(());
             }
             if *riid == <IUnknown as Interface>::IID {

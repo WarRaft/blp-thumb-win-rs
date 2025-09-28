@@ -1,20 +1,27 @@
 use crate::{
-    DLL_LOCK_COUNT, ProviderState, create_hbitmap_bgra_premul, decode_blp_rgba, resize_fit_rgba,
-    rgba_to_bgra_premul,
+    create_hbitmap_bgra_premul, decode_blp_rgba, resize_fit_rgba, rgba_to_bgra_premul, DLL_LOCK_COUNT,
+    ProviderState,
 };
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use windows_implement::implement;
 
 use windows::Win32::Graphics::Gdi::HBITMAP;
-use windows::Win32::UI::Shell::{IShellItem, SIGDN_FILESYSPATH, WTS_ALPHATYPE, WTSAT_ARGB};
-use windows::core::Result as WinResult;
-use windows_core::PWSTR;
+use windows::Win32::System::Com::{ISequentialStream, IStream, STREAM_SEEK_SET};
+use windows::Win32::UI::Shell::{
+    IInitializeWithFile, IInitializeWithItem, IInitializeWithStream, IShellItem, SIGDN_FILESYSPATH,
+    WTS_ALPHATYPE, WTSAT_ARGB,
+};
+use windows::core::{Interface, Result as WinResult};
+use windows_core::{PCWSTR, PWSTR};
 
 #[implement(
     windows::Win32::UI::Shell::IThumbnailProvider,
-    windows::Win32::UI::Shell::IInitializeWithItem
+    windows::Win32::UI::Shell::IInitializeWithItem,
+    windows::Win32::UI::Shell::IInitializeWithStream,
+    windows::Win32::UI::Shell::IInitializeWithFile
 )]
 pub struct BlpThumbProvider {
     state: Mutex<ProviderState>,
@@ -58,8 +65,85 @@ impl windows::Win32::UI::Shell::IInitializeWithItem_Impl for BlpThumbProvider_Im
             let s16 = widestring::U16CStr::from_ptr_str(pw.0);
             let mut st = self.state.lock().unwrap();
             st.path_utf8 = Some(s16.to_string_lossy());
+            st.stream_data = None;
             // при желании: windows::Win32::System::Memory::CoTaskMemFree(Some(pw.0 as _));
         }
+        Ok(())
+    }
+}
+
+impl windows::Win32::UI::Shell::IInitializeWithFile_Impl for BlpThumbProvider_Impl {
+    #[allow(non_snake_case)]
+    fn Initialize(
+        &self,
+        psz_file_path: &PCWSTR,
+        _grf_mode: u32,
+    ) -> windows::core::Result<()> {
+        use windows::Win32::Foundation::E_FAIL;
+
+        if psz_file_path.is_null() || psz_file_path.0.is_null() {
+            return Err(windows::core::Error::from(E_FAIL));
+        }
+
+        let path = unsafe {
+            widestring::U16CStr::from_ptr_str(psz_file_path.0)
+                .to_string_lossy()
+        };
+
+        let mut st = self.state.lock().unwrap();
+        st.path_utf8 = Some(path);
+        st.stream_data = None;
+        Ok(())
+    }
+}
+
+impl windows::Win32::UI::Shell::IInitializeWithStream_Impl for BlpThumbProvider_Impl {
+    #[allow(non_snake_case)]
+    fn Initialize(
+        &self,
+        pstream: windows::core::Ref<'_, IStream>,
+        _grf_mode: u32,
+    ) -> windows::core::Result<()> {
+        use windows::Win32::Foundation::{E_FAIL, S_FALSE};
+        use windows::core::Error;
+
+        let stream: &IStream = pstream.ok()?;
+
+        // Always try to rewind to the beginning.
+        unsafe {
+            stream.Seek(0, STREAM_SEEK_SET, None)?;
+        }
+
+        let mut data = Vec::<u8>::new();
+        let seq: ISequentialStream = stream.cast()?;
+        let mut buf = [0u8; 8192];
+
+        loop {
+            let mut read = 0u32;
+            let hr = unsafe {
+                seq.Read(buf.as_mut_ptr() as *mut _, buf.len() as u32, &mut read)
+            };
+
+            if hr.is_err() {
+                return Err(Error::from(hr));
+            }
+
+            if read > 0 {
+                data.extend_from_slice(&buf[..read as usize]);
+            }
+
+            if hr == windows::core::HRESULT::from(S_FALSE) || read == 0 {
+                break;
+            }
+        }
+
+        if data.is_empty() {
+            return Err(Error::from(E_FAIL));
+        }
+
+        let mut st = self.state.lock().unwrap();
+        st.path_utf8 = None;
+        st.stream_data = Some(Arc::from(data));
         Ok(())
     }
 }
@@ -99,15 +183,22 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
         }
         // ------------------------------------
 
-        // путь из state
-        let path = {
+        // источник: либо кэшированные данные из потока, либо путь на диске
+        let (data_arc, path_opt) = {
             let st = self.state.lock().unwrap();
-            st.path_utf8.clone().ok_or_else(|| Error::from(E_FAIL))?
+            (st.stream_data.clone(), st.path_utf8.clone())
+        };
+
+        let data_arc: Arc<[u8]> = if let Some(buf) = data_arc {
+            buf
+        } else {
+            let path = path_opt.ok_or_else(|| Error::from(E_FAIL))?;
+            let raw = std::fs::read(path).map_err(|_| Error::from(E_FAIL))?;
+            Arc::from(raw)
         };
 
         // читаем и декодим BLP → RGBA (mip0)
-        let data = std::fs::read(path).map_err(|_| Error::from(E_FAIL))?;
-        let (w, h, rgba) = decode_blp_rgba(&data).map_err(|_| Error::from(E_FAIL))?;
+        let (w, h, rgba) = decode_blp_rgba(&data_arc).map_err(|_| Error::from(E_FAIL))?;
         let (tw, th, rgba_fit) = if cx > 0 && w.max(h) > cx {
             resize_fit_rgba(&rgba, w, h, cx)
         } else {
