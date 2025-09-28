@@ -22,7 +22,13 @@ static DLL_BYTES: &[u8] = include_bytes!(concat!(
 // Single source of truth from the library (your keys module)
 use crate::restart_explorer::restart_explorer;
 use blp_thumb_win::keys::{
-    DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME, clsid_str, shell_thumb_handler_catid_str,
+    CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME, clsid_str,
+    shell_thumb_handler_catid_str,
+};
+use windows::core::IUnknown;
+use windows::Win32::Foundation::{S_FALSE, S_OK};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 
 #[path = "installer/restart_explorer.rs"]
@@ -197,6 +203,12 @@ fn status() -> io::Result<()> {
         report.ok_apps_progids_matched, report.apps_progids_total
     );
     println!("  UserChoice target:           {}", report.ok_user_choice);
+    println!("  CoCreateInstance test:       {}", report.com_create_status);
+    if !report.alerts.is_empty() {
+        for alert in &report.alerts {
+            println!("  ALERT: {}", alert);
+        }
+    }
 
     if report.apps_list_total > 0 {
         println!("\n  OpenWithList entries:");
@@ -218,14 +230,15 @@ fn status() -> io::Result<()> {
     }
 
     log_cli(format!(
-        "Status summary -> CLSID: {}, Inproc: {}, ProgID bind: {}, Ext bind: {}, SysAssoc bind: {}, AppsList OK: {}/{}",
+        "Status summary -> CLSID: {}, Inproc: {}, ProgID bind: {}, Ext bind: {}, SysAssoc bind: {}, AppsList OK: {}/{}, CoCreate: {}",
         mark(report.ok_clsid),
         mark(report.ok_inproc),
         mark(report.ok_bind_prog),
         mark(report.ok_bind_ext),
         mark(report.ok_bind_sys),
         report.ok_apps_list_matched,
-        report.apps_list_total
+        report.apps_list_total,
+        report.com_create_status
     ));
     Ok(())
 }
@@ -555,6 +568,8 @@ struct StatusReport {
     apps_list_details: Vec<(String, bool)>,
     apps_progids_details: Vec<(String, bool)>,
     user_choice_detail: Option<(String, bool)>,
+    com_create_status: &'static str,
+    alerts: Vec<String>,
 }
 
 fn probe_status() -> io::Result<StatusReport> {
@@ -626,6 +641,47 @@ fn probe_status() -> io::Result<StatusReport> {
         .map(|(_, ok)| if *ok { "OK" } else { "NO" })
         .unwrap_or("N/A");
 
+    let mut alerts = Vec::new();
+    if !ok_clsid {
+        alerts.push("CLSID key missing".to_string());
+    }
+    if !ok_inproc {
+        alerts.push("InprocServer32 missing".to_string());
+    }
+    if !ok_prog {
+        alerts.push("ProgID ShellEx binding missing".to_string());
+    }
+    if !ok_ext {
+        alerts.push("Extension ShellEx binding missing".to_string());
+    }
+    if !ok_sys {
+        alerts.push("SystemFileAssociations ShellEx binding missing".to_string());
+    }
+
+    let mut com_create_status = "FAIL";
+    let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    if hr == S_OK || hr == S_FALSE {
+        unsafe {
+            match CoCreateInstance::<Option<&IUnknown>, IUnknown>(
+                &CLSID_BLP_THUMB,
+                None,
+                CLSCTX_INPROC_SERVER,
+            ) {
+                Ok(_) => {
+                    com_create_status = "OK";
+                }
+                Err(err) => {
+                    alerts.push(format!("CoCreateInstance failed: {err:?}"));
+                    log_cli(format!("Status: CoCreateInstance failed: {err:?}"));
+                }
+            }
+            CoUninitialize();
+        }
+    } else {
+        alerts.push(format!("CoInitializeEx failed: {hr:?}"));
+        log_cli(format!("Status: CoInitializeEx failed: {:?}", hr));
+    }
+
     Ok(StatusReport {
         ok_clsid,
         ok_inproc,
@@ -640,6 +696,8 @@ fn probe_status() -> io::Result<StatusReport> {
         apps_list_details,
         apps_progids_details,
         user_choice_detail,
+        com_create_status,
+        alerts,
     })
 }
 
