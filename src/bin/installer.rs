@@ -323,6 +323,23 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
     let (key_sys_thumb, _) = key_sys_shellex.create_subkey(&catid)?;
     key_sys_thumb.set_value("", &clsid)?;
 
+    // Bind under Applications referenced in OpenWithList
+    for entry in open_with_list_entries(&hkcu, &ext) {
+        bind_application(&hkcu, &entry, &catid, &clsid)?;
+    }
+
+    for progid in open_with_progids_entries(&hkcu, &ext) {
+        bind_prog_id_application(&hkcu, &progid, &catid, &clsid)?;
+    }
+
+    if let Some(prog_id) = user_choice_prog_id(&hkcu, &ext) {
+        if let Some(app) = prog_id.strip_prefix("Applications\\") {
+            bind_application(&hkcu, app, &catid, &clsid)?;
+        } else {
+            bind_prog_id_application(&hkcu, &prog_id, &catid, &clsid)?;
+        }
+    }
+
     log_cli("Register COM: completed");
 
     Ok(())
@@ -351,6 +368,23 @@ fn unregister_com() -> io::Result<()> {
     ));
     let _ = hkcu
         .delete_subkey_all(format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}", ext, catid));
+
+    // Remove bindings under Applications
+    for entry in open_with_list_entries(&hkcu, &ext) {
+        remove_application_binding(&hkcu, &entry, &catid);
+    }
+
+    for progid in open_with_progids_entries(&hkcu, &ext) {
+        remove_prog_id_application(&hkcu, &progid, &catid);
+    }
+
+    if let Some(prog_id) = user_choice_prog_id(&hkcu, &ext) {
+        if let Some(app) = prog_id.strip_prefix("Applications\\") {
+            remove_application_binding(&hkcu, app, &catid);
+        } else {
+            remove_prog_id_application(&hkcu, &prog_id, &catid);
+        }
+    }
     log_cli("Unregister COM: removing CLSID keys");
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
     let _ = hkcu
@@ -411,6 +445,159 @@ fn pause(msg: &str) {
 
 fn mark(b: bool) -> &'static str {
     if b { "OK" } else { "NO" }
+}
+
+fn open_with_list_entries(hkcu: &RegKey, ext: &str) -> Vec<String> {
+    let path = format!(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{}\OpenWithList",
+        ext
+    );
+    let mut entries = Vec::new();
+    if let Ok(key) = hkcu.open_subkey(path) {
+        for item in key.enum_values() {
+            if let Ok((name, value)) = item {
+                if name.len() == 1 {
+                    let entry = value.to_string();
+                    let entry = entry.trim_matches(char::from(0)).trim().to_string();
+                    if !entry.is_empty() {
+                        entries.push(entry);
+                    }
+                }
+            }
+        }
+    }
+    entries
+}
+
+fn open_with_progids_entries(hkcu: &RegKey, ext: &str) -> Vec<String> {
+    let path = format!(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{}\OpenWithProgids",
+        ext
+    );
+    let mut entries = Vec::new();
+    if let Ok(key) = hkcu.open_subkey(path) {
+        for item in key.enum_values() {
+            if let Ok((name, _)) = item {
+                let entry = name.trim_matches(char::from(0)).trim().to_string();
+                if !entry.is_empty() {
+                    entries.push(entry);
+                }
+            }
+        }
+    }
+    entries
+}
+
+fn user_choice_prog_id(hkcu: &RegKey, ext: &str) -> Option<String> {
+    let path = format!(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{}\UserChoice",
+        ext
+    );
+    hkcu
+        .open_subkey(path)
+        .ok()
+        .and_then(|key| key.get_value::<String, _>("ProgId").ok())
+        .map(|s| s.trim_matches(char::from(0)).to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn bind_application(
+    hkcu: &RegKey,
+    entry: &str,
+    catid: &str,
+    clsid: &str,
+) -> io::Result<()> {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return Ok(());
+    }
+
+    // If entry is already a ProgID, reuse helper
+    if !entry.ends_with(".exe") {
+        return bind_prog_id_application(hkcu, entry, catid, clsid);
+    }
+
+    let key_path = format!(
+        r"Software\Classes\Applications\{}\ShellEx",
+        entry
+    );
+    log_cli(format!(
+        "Register COM: binding under application {} (ShellEx)",
+        entry
+    ));
+    let (app_shellex, _) = hkcu.create_subkey(key_path)?;
+    let (app_thumb, _) = app_shellex.create_subkey(catid)?;
+    app_thumb.set_value("", &clsid)?;
+    Ok(())
+}
+
+fn bind_prog_id_application(
+    hkcu: &RegKey,
+    progid: &str,
+    catid: &str,
+    clsid: &str,
+) -> io::Result<()> {
+    let progid = progid.trim();
+    if progid.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(app) = progid.strip_prefix("Applications\\") {
+        return bind_application(hkcu, app, catid, clsid);
+    }
+
+    log_cli(format!(
+        "Register COM: binding under ProgID application {}",
+        progid
+    ));
+    let (app_shellex, _) = hkcu.create_subkey(format!(
+        r"Software\Classes\{}\ShellEx",
+        progid
+    ))?;
+    let (app_thumb, _) = app_shellex.create_subkey(catid)?;
+    app_thumb.set_value("", &clsid)?;
+    Ok(())
+}
+
+fn remove_application_binding(hkcu: &RegKey, entry: &str, catid: &str) {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return;
+    }
+
+    if !entry.ends_with(".exe") {
+        remove_prog_id_application(hkcu, entry, catid);
+        return;
+    }
+
+    let path = format!(
+        r"Software\Classes\Applications\{}\ShellEx\{}",
+        entry, catid
+    );
+    log_cli(format!(
+        "Unregister COM: removing application binding {}",
+        entry
+    ));
+    let _ = hkcu.delete_subkey_all(path);
+}
+
+fn remove_prog_id_application(hkcu: &RegKey, progid: &str, catid: &str) {
+    let progid = progid.trim();
+    if progid.is_empty() {
+        return;
+    }
+
+    if let Some(app) = progid.strip_prefix("Applications\\") {
+        remove_application_binding(hkcu, app, catid);
+        return;
+    }
+
+    let path = format!(r"Software\Classes\{}\ShellEx\{}", progid, catid);
+    log_cli(format!(
+        "Unregister COM: removing ProgID application binding {}",
+        progid
+    ));
+    let _ = hkcu.delete_subkey_all(path);
 }
 
 fn notify_shell_assoc(reason: &str) {
