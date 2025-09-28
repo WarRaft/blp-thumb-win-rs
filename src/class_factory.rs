@@ -19,9 +19,8 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
         ppv: *mut *mut c_void,
     ) -> windows::core::Result<()> {
         use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER};
-        use windows::Win32::UI::Shell::{
-            IInitializeWithFile, IInitializeWithItem, IInitializeWithStream, IThumbnailProvider,
-        };
+        use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithStream};
+        use windows::Win32::UI::Shell::{IInitializeWithItem, IThumbnailProvider};
         use windows::core::{Error, IUnknown, Interface};
 
         if ppv.is_null() || riid.is_null() {

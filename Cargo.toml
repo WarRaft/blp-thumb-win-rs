@@ -22,6 +22,7 @@ windows = { version = "0.62.1", features = [
     "Win32_Graphics_Gdi", # LCS_sRGB и BITMAPV5HEADER
     "Win32_UI_Shell", # IThumbnailProvider, IInitializeWithFile
     "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
 ] }
 windows-core = "0.62.1"
 windows-implement = "0.60.1"
@@ -45,7 +46,6 @@ crate-type = ["cdylib", "rlib"]
 [[bin]]
 name = "blp-thumb-installer"
 path = "src/bin/installer.rs"
-
 
 
 

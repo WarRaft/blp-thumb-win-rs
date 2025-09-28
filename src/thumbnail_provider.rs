@@ -10,18 +10,19 @@ use windows_implement::implement;
 
 use windows::Win32::Graphics::Gdi::HBITMAP;
 use windows::Win32::System::Com::{ISequentialStream, IStream, STREAM_SEEK_SET};
-use windows::Win32::UI::Shell::{
-    IInitializeWithFile, IInitializeWithItem, IInitializeWithStream, IShellItem, SIGDN_FILESYSPATH,
-    WTS_ALPHATYPE, WTSAT_ARGB,
+use windows::Win32::UI::Shell::PropertiesSystem::{
+    IInitializeWithFile_Impl, IInitializeWithStream_Impl,
 };
+use windows::Win32::UI::Shell::{IInitializeWithItem_Impl, IShellItem, SIGDN_FILESYSPATH, WTS_ALPHATYPE,
+    WTSAT_ARGB};
 use windows::core::{Interface, Result as WinResult};
 use windows_core::{PCWSTR, PWSTR};
 
 #[implement(
     windows::Win32::UI::Shell::IThumbnailProvider,
     windows::Win32::UI::Shell::IInitializeWithItem,
-    windows::Win32::UI::Shell::IInitializeWithStream,
-    windows::Win32::UI::Shell::IInitializeWithFile
+    windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithStream,
+    windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithFile
 )]
 pub struct BlpThumbProvider {
     state: Mutex<ProviderState>,
@@ -46,7 +47,7 @@ impl Drop for BlpThumbProvider {
 // ВАЖНО: реализации на *_Impl
 // ============================
 
-impl windows::Win32::UI::Shell::IInitializeWithItem_Impl for BlpThumbProvider_Impl {
+impl IInitializeWithItem_Impl for BlpThumbProvider_Impl {
     #[allow(non_snake_case)]
     fn Initialize(
         &self,
@@ -72,7 +73,7 @@ impl windows::Win32::UI::Shell::IInitializeWithItem_Impl for BlpThumbProvider_Im
     }
 }
 
-impl windows::Win32::UI::Shell::IInitializeWithFile_Impl for BlpThumbProvider_Impl {
+impl IInitializeWithFile_Impl for BlpThumbProvider_Impl {
     #[allow(non_snake_case)]
     fn Initialize(
         &self,
@@ -97,7 +98,7 @@ impl windows::Win32::UI::Shell::IInitializeWithFile_Impl for BlpThumbProvider_Im
     }
 }
 
-impl windows::Win32::UI::Shell::IInitializeWithStream_Impl for BlpThumbProvider_Impl {
+impl IInitializeWithStream_Impl for BlpThumbProvider_Impl {
     #[allow(non_snake_case)]
     fn Initialize(
         &self,
@@ -121,7 +122,11 @@ impl windows::Win32::UI::Shell::IInitializeWithStream_Impl for BlpThumbProvider_
         loop {
             let mut read = 0u32;
             let hr = unsafe {
-                seq.Read(buf.as_mut_ptr() as *mut _, buf.len() as u32, &mut read)
+                seq.Read(
+                    buf.as_mut_ptr() as *mut _,
+                    buf.len() as u32,
+                    Some(&mut read as *mut u32),
+                )
             };
 
             if hr.is_err() {
