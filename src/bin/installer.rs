@@ -203,6 +203,7 @@ fn status() -> io::Result<()> {
         report.ok_apps_progids_matched, report.apps_progids_total
     );
     println!("  UserChoice target:           {}", report.ok_user_choice);
+    println!("  Explorer ThumbnailHandlers:  {}", mark(report.ok_thumb_handler));
     println!("  CoCreateInstance test:       {}", report.com_create_status);
     if !report.alerts.is_empty() {
         for alert in &report.alerts {
@@ -230,12 +231,13 @@ fn status() -> io::Result<()> {
     }
 
     log_cli(format!(
-        "Status summary -> CLSID: {}, Inproc: {}, ProgID bind: {}, Ext bind: {}, SysAssoc bind: {}, AppsList OK: {}/{}, CoCreate: {}",
+        "Status summary -> CLSID: {}, Inproc: {}, ProgID bind: {}, Ext bind: {}, SysAssoc bind: {}, Explorer handlers: {}, AppsList OK: {}/{}, CoCreate: {}",
         mark(report.ok_clsid),
         mark(report.ok_inproc),
         mark(report.ok_bind_prog),
         mark(report.ok_bind_ext),
         mark(report.ok_bind_sys),
+        mark(report.ok_thumb_handler),
         report.ok_apps_list_matched,
         report.apps_list_total,
         report.com_create_status
@@ -314,6 +316,12 @@ fn clear_associations() -> io::Result<()> {
         r"Software\Classes\SystemFileAssociations\{}",
         ext
     ));
+    if let Ok(thumb_handlers) = hkcu.open_subkey_with_flags(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
+        KEY_SET_VALUE,
+    ) {
+        let _ = thumb_handlers.delete_value(&ext);
+    }
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\WarRaft.BLP"));
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
     let _ = hkcu
@@ -470,6 +478,12 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
     let (key_sys_thumb, _) = key_sys_shellex.create_subkey(&catid)?;
     key_sys_thumb.set_value("", &clsid)?;
 
+    log_cli("Register COM: binding under Explorer\\ThumbnailHandlers");
+    let (thumb_handlers, _) = hkcu.create_subkey(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
+    )?;
+    thumb_handlers.set_value(&ext, &clsid)?;
+
     // Bind under Applications referenced in OpenWithList
     for entry in open_with_list_entries(&hkcu, &ext) {
         bind_application(&hkcu, &entry, &catid, &clsid)?;
@@ -518,6 +532,13 @@ fn unregister_com() -> io::Result<()> {
         ext, catid
     ));
 
+    if let Ok(thumb_handlers) = hkcu.open_subkey_with_flags(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
+        KEY_SET_VALUE,
+    ) {
+        let _ = thumb_handlers.delete_value(&ext);
+    }
+
     if let Ok(ext_key) =
         hkcu.open_subkey_with_flags(format!(r"Software\Classes\{}", ext), KEY_SET_VALUE)
     {
@@ -560,6 +581,7 @@ struct StatusReport {
     ok_bind_prog: bool,
     ok_bind_ext: bool,
     ok_bind_sys: bool,
+    ok_thumb_handler: bool,
     ok_apps_list_matched: usize,
     apps_list_total: usize,
     ok_apps_progids_matched: usize,
@@ -658,6 +680,16 @@ fn probe_status() -> io::Result<StatusReport> {
         alerts.push("SystemFileAssociations ShellEx binding missing".to_string());
     }
 
+    let ok_thumb_handler = hkcu
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers")
+        .ok()
+        .and_then(|key| key.get_value::<String, _>(&ext).ok())
+        .map(|val| val.trim_matches(char::from(0)) == clsid)
+        .unwrap_or(false);
+    if !ok_thumb_handler {
+        alerts.push("Explorer ThumbnailHandlers mapping missing".to_string());
+    }
+
     let mut com_create_status = "FAIL";
     let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     if hr == S_OK || hr == S_FALSE {
@@ -688,6 +720,7 @@ fn probe_status() -> io::Result<StatusReport> {
         ok_bind_prog: ok_prog,
         ok_bind_ext: ok_ext,
         ok_bind_sys: ok_sys,
+        ok_thumb_handler,
         ok_apps_list_matched,
         apps_list_total: apps_list_details.len(),
         ok_apps_progids_matched,
