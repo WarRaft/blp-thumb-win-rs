@@ -9,8 +9,8 @@ use std::{
 use dialoguer::console::style;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Select, console::Term};
+use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 use winreg::{RegKey, enums::*};
-use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
 
 // Embedded DLL that you copy into ./bin/ at build time.
 // The EXE will re-materialize it under %LOCALAPPDATA%\blp-thumb-win\
@@ -169,11 +169,26 @@ fn status() -> io::Result<()> {
     println!("Status (details below):");
     println!("  CLSID key:                   {}", mark(report.ok_clsid));
     println!("  InprocServer32 value:        {}", mark(report.ok_inproc));
-    println!("  ShellEx bind (ProgID):       {}", mark(report.ok_bind_prog));
-    println!("  ShellEx bind (Ext):          {}", mark(report.ok_bind_ext));
-    println!("  ShellEx bind (SysAssoc):     {}", mark(report.ok_bind_sys));
-    println!("  Applications OpenWithList:   {}/{}", report.ok_apps_list_matched, report.apps_list_total);
-    println!("  Applications OpenWithProgids:{}/{}", report.ok_apps_progids_matched, report.apps_progids_total);
+    println!(
+        "  ShellEx bind (ProgID):       {}",
+        mark(report.ok_bind_prog)
+    );
+    println!(
+        "  ShellEx bind (Ext):          {}",
+        mark(report.ok_bind_ext)
+    );
+    println!(
+        "  ShellEx bind (SysAssoc):     {}",
+        mark(report.ok_bind_sys)
+    );
+    println!(
+        "  Applications OpenWithList:   {}/{}",
+        report.ok_apps_list_matched, report.apps_list_total
+    );
+    println!(
+        "  Applications OpenWithProgids:{}/{}",
+        report.ok_apps_progids_matched, report.apps_progids_total
+    );
     println!("  UserChoice target:           {}", report.ok_user_choice);
 
     if report.apps_list_total > 0 {
@@ -196,7 +211,7 @@ fn status() -> io::Result<()> {
     }
 
     log_cli(format!(
-        "Status summary -> CLSID: {}, Inproc: {}, ProgID bind: {}, Ext bind: {}, SysAssoc bind: {}, AppsList OK: {}/{}", 
+        "Status summary -> CLSID: {}, Inproc: {}, ProgID bind: {}, Ext bind: {}, SysAssoc bind: {}, AppsList OK: {}/{}",
         mark(report.ok_clsid),
         mark(report.ok_inproc),
         mark(report.ok_bind_prog),
@@ -300,8 +315,8 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
     log_cli("Register COM: creating CLSID key");
     let (key_clsid, _) = hkcu.create_subkey(format!(r"Software\Classes\CLSID\{}", clsid))?;
     key_clsid.set_value("", &FRIENDLY_NAME)?;
-    log_cli("Register COM: setting DisableProcessIsolation=1");
-    key_clsid.set_value("DisableProcessIsolation", &1u32)?;
+    //log_cli("Register COM: setting DisableProcessIsolation=1");
+    //key_clsid.set_value("DisableProcessIsolation", &1u32)?;
 
     // HKCU\Software\Classes\CLSID\{CLSID}\InprocServer32
     log_cli("Register COM: writing InprocServer32");
@@ -331,7 +346,9 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
     let (ext_key, _) = hkcu.create_subkey(format!(r"Software\Classes\{}", ext))?;
     // Don't clobber an existing Content Type if it differs; log instead
     match ext_key.get_value::<String, _>("Content Type") {
-        Ok(existing) if !existing.trim_matches(char::from(0)).is_empty() && existing != "image/x-blp" => {
+        Ok(existing)
+            if !existing.trim_matches(char::from(0)).is_empty() && existing != "image/x-blp" =>
+        {
             log_cli(format!(
                 "Register COM: skipping Content Type override (current={})",
                 existing
@@ -364,8 +381,10 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
         "Register COM: binding under SystemFileAssociations {}",
         ext
     ));
-    let (key_sys_shellex, _) = hkcu
-        .create_subkey(format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx", ext))?;
+    let (key_sys_shellex, _) = hkcu.create_subkey(format!(
+        r"Software\Classes\SystemFileAssociations\{}\ShellEx",
+        ext
+    ))?;
     let (key_sys_thumb, _) = key_sys_shellex.create_subkey(&catid)?;
     key_sys_thumb.set_value("", &clsid)?;
 
@@ -412,13 +431,14 @@ fn unregister_com() -> io::Result<()> {
         "Unregister COM: removing SystemFileAssociations binding {}",
         ext
     ));
-    let _ = hkcu
-        .delete_subkey_all(format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}", ext, catid));
+    let _ = hkcu.delete_subkey_all(format!(
+        r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
+        ext, catid
+    ));
 
-    if let Ok(ext_key) = hkcu.open_subkey_with_flags(
-        format!(r"Software\Classes\{}", ext),
-        KEY_SET_VALUE,
-    ) {
+    if let Ok(ext_key) =
+        hkcu.open_subkey_with_flags(format!(r"Software\Classes\{}", ext), KEY_SET_VALUE)
+    {
         let _ = ext_key.delete_value("Content Type");
         let _ = ext_key.delete_value("PerceivedType");
     }
@@ -621,8 +641,7 @@ fn user_choice_prog_id(hkcu: &RegKey, ext: &str) -> Option<String> {
         r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{}\UserChoice",
         ext
     );
-    hkcu
-        .open_subkey(path)
+    hkcu.open_subkey(path)
         .ok()
         .and_then(|key| key.get_value::<String, _>("ProgId").ok())
         .map(|s| s.trim_matches(char::from(0)).to_string())
@@ -638,12 +657,11 @@ fn check_application_binding(hkcu: &RegKey, entry: &str, catid: &str) -> bool {
         return check_prog_id_application(hkcu, entry, catid);
     }
 
-    hkcu
-        .open_subkey(format!(
-            r"Software\Classes\Applications\{}\ShellEx\{}",
-            entry, catid
-        ))
-        .is_ok()
+    hkcu.open_subkey(format!(
+        r"Software\Classes\Applications\{}\ShellEx\{}",
+        entry, catid
+    ))
+    .is_ok()
 }
 
 fn check_prog_id_application(hkcu: &RegKey, progid: &str, catid: &str) -> bool {
@@ -655,20 +673,11 @@ fn check_prog_id_application(hkcu: &RegKey, progid: &str, catid: &str) -> bool {
         return check_application_binding(hkcu, app, catid);
     }
 
-    hkcu
-        .open_subkey(format!(
-            r"Software\Classes\{}\ShellEx\{}",
-            progid, catid
-        ))
+    hkcu.open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", progid, catid))
         .is_ok()
 }
 
-fn bind_application(
-    hkcu: &RegKey,
-    entry: &str,
-    catid: &str,
-    clsid: &str,
-) -> io::Result<()> {
+fn bind_application(hkcu: &RegKey, entry: &str, catid: &str, clsid: &str) -> io::Result<()> {
     let entry = entry.trim();
     if entry.is_empty() {
         return Ok(());
@@ -679,10 +688,7 @@ fn bind_application(
         return bind_prog_id_application(hkcu, entry, catid, clsid);
     }
 
-    let key_path = format!(
-        r"Software\Classes\Applications\{}\ShellEx",
-        entry
-    );
+    let key_path = format!(r"Software\Classes\Applications\{}\ShellEx", entry);
     log_cli(format!(
         "Register COM: binding under application {} (ShellEx)",
         entry
@@ -712,10 +718,7 @@ fn bind_prog_id_application(
         "Register COM: binding under ProgID application {}",
         progid
     ));
-    let (app_shellex, _) = hkcu.create_subkey(format!(
-        r"Software\Classes\{}\ShellEx",
-        progid
-    ))?;
+    let (app_shellex, _) = hkcu.create_subkey(format!(r"Software\Classes\{}\ShellEx", progid))?;
     let (app_thumb, _) = app_shellex.create_subkey(catid)?;
     app_thumb.set_value("", &clsid)?;
     Ok(())
@@ -732,10 +735,7 @@ fn remove_application_binding(hkcu: &RegKey, entry: &str, catid: &str) {
         return;
     }
 
-    let path = format!(
-        r"Software\Classes\Applications\{}\ShellEx\{}",
-        entry, catid
-    );
+    let path = format!(r"Software\Classes\Applications\{}\ShellEx\{}", entry, catid);
     log_cli(format!(
         "Unregister COM: removing application binding {}",
         entry
