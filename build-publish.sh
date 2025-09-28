@@ -61,7 +61,7 @@ git commit -m "chore(release): $TAG"
 git tag -a "$TAG" -m "$PROJECT_NAME $NEW_VERSION"
 git push origin HEAD --tags
 
-# --- build (двухпроходный build-only.sh кладёт DLL+EXE в ./bin) ---
+# --- build ---
 ./build-only.sh
 
 # --- asset: только инсталлер из ./bin ---
