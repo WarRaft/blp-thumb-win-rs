@@ -164,19 +164,47 @@ fn uninstall() -> io::Result<()> {
 
 fn status() -> io::Result<()> {
     log_cli("Status: probing");
-    let (ok_clsid, ok_inproc, ok_bind_prog, ok_bind_ext) = probe_status()?;
+    let report = probe_status()?;
+
+    println!("Status (details below):");
+    println!("  CLSID key:                   {}", mark(report.ok_clsid));
+    println!("  InprocServer32 value:        {}", mark(report.ok_inproc));
+    println!("  ShellEx bind (ProgID):       {}", mark(report.ok_bind_prog));
+    println!("  ShellEx bind (Ext):          {}", mark(report.ok_bind_ext));
+    println!("  ShellEx bind (SysAssoc):     {}", mark(report.ok_bind_sys));
+    println!("  Applications OpenWithList:   {}/{}", report.ok_apps_list_matched, report.apps_list_total);
+    println!("  Applications OpenWithProgids:{}/{}", report.ok_apps_progids_matched, report.apps_progids_total);
+    println!("  UserChoice target:           {}", report.ok_user_choice);
+
+    if report.apps_list_total > 0 {
+        println!("\n  OpenWithList entries:");
+        for (entry, bound) in report.apps_list_details {
+            println!("    {:<30} {}", entry, mark(bound));
+        }
+    }
+
+    if report.apps_progids_total > 0 {
+        println!("\n  OpenWithProgids entries:");
+        for (entry, bound) in report.apps_progids_details {
+            println!("    {:<30} {}", entry, mark(bound));
+        }
+    }
+
+    if let Some(choice) = report.user_choice_detail {
+        println!("\n  UserChoice:");
+        println!("    {:<30} {}", choice.0, mark(choice.1));
+    }
+
     log_cli(format!(
-        "Status results -> CLSID: {}, Inproc: {}, ProgID bind: {}, Ext bind: {}",
-        mark(ok_clsid),
-        mark(ok_inproc),
-        mark(ok_bind_prog),
-        mark(ok_bind_ext)
+        "Status summary -> CLSID: {}, Inproc: {}, ProgID bind: {}, Ext bind: {}, SysAssoc bind: {}, AppsList OK: {}/{}", 
+        mark(report.ok_clsid),
+        mark(report.ok_inproc),
+        mark(report.ok_bind_prog),
+        mark(report.ok_bind_ext),
+        mark(report.ok_bind_sys),
+        report.ok_apps_list_matched,
+        report.apps_list_total
     ));
-    println!("Status:");
-    println!("  CLSID key:             {}", mark(ok_clsid));
-    println!("  InprocServer32 value:  {}", mark(ok_inproc));
-    println!("  ShellEx bind (ProgID): {}", mark(ok_bind_prog));
-    println!("  ShellEx bind (Ext):    {}", mark(ok_bind_ext));
     Ok(())
 }
 
@@ -296,8 +324,26 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
         clsid, catid
     ))?;
 
-    // Bind under ProgID if present, otherwise under extension key.
     let ext = normalize_ext(DEFAULT_EXT);
+
+    // Extension metadata
+    log_cli("Register COM: ensuring extension metadata (content type/perceived type)");
+    let (ext_key, _) = hkcu.create_subkey(format!(r"Software\Classes\{}", ext))?;
+    // Don't clobber an existing Content Type if it differs; log instead
+    match ext_key.get_value::<String, _>("Content Type") {
+        Ok(existing) if !existing.trim_matches(char::from(0)).is_empty() && existing != "image/x-blp" => {
+            log_cli(format!(
+                "Register COM: skipping Content Type override (current={})",
+                existing
+            ));
+        }
+        _ => {
+            ext_key.set_value("Content Type", &"image/x-blp")?;
+        }
+    }
+    ext_key.set_value("PerceivedType", &"image")?;
+
+    // Bind under ProgID if present, otherwise under extension key.
     let progid_opt = current_progid_of_ext(&ext);
 
     if let Some(pid) = &progid_opt {
@@ -369,6 +415,14 @@ fn unregister_com() -> io::Result<()> {
     let _ = hkcu
         .delete_subkey_all(format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}", ext, catid));
 
+    if let Ok(ext_key) = hkcu.open_subkey_with_flags(
+        format!(r"Software\Classes\{}", ext),
+        KEY_SET_VALUE,
+    ) {
+        let _ = ext_key.delete_value("Content Type");
+        let _ = ext_key.delete_value("PerceivedType");
+    }
+
     // Remove bindings under Applications
     for entry in open_with_list_entries(&hkcu, &ext) {
         remove_application_binding(&hkcu, &entry, &catid);
@@ -397,7 +451,23 @@ fn unregister_com() -> io::Result<()> {
     Ok(())
 }
 
-fn probe_status() -> io::Result<(bool, bool, bool, bool)> {
+struct StatusReport {
+    ok_clsid: bool,
+    ok_inproc: bool,
+    ok_bind_prog: bool,
+    ok_bind_ext: bool,
+    ok_bind_sys: bool,
+    ok_apps_list_matched: usize,
+    apps_list_total: usize,
+    ok_apps_progids_matched: usize,
+    apps_progids_total: usize,
+    ok_user_choice: &'static str,
+    apps_list_details: Vec<(String, bool)>,
+    apps_progids_details: Vec<(String, bool)>,
+    user_choice_detail: Option<(String, bool)>,
+}
+
+fn probe_status() -> io::Result<StatusReport> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let clsid = clsid_str();
     let catid = shell_thumb_handler_catid_str();
@@ -422,7 +492,65 @@ fn probe_status() -> io::Result<(bool, bool, bool, bool)> {
         .open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid))
         .is_ok();
 
-    Ok((ok_clsid, ok_inproc, ok_prog, ok_ext))
+    let ok_sys = hkcu
+        .open_subkey(format!(
+            r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
+            ext, catid
+        ))
+        .is_ok();
+
+    let list_entries = open_with_list_entries(&hkcu, &ext);
+    let mut apps_list_details = Vec::new();
+    let mut ok_apps_list_matched = 0;
+    for entry in list_entries {
+        let bound = check_application_binding(&hkcu, &entry, &catid);
+        if bound {
+            ok_apps_list_matched += 1;
+        }
+        apps_list_details.push((entry, bound));
+    }
+
+    let progid_entries = open_with_progids_entries(&hkcu, &ext);
+    let mut apps_progids_details = Vec::new();
+    let mut ok_apps_progids_matched = 0;
+    for entry in progid_entries {
+        let bound = check_prog_id_application(&hkcu, &entry, &catid);
+        if bound {
+            ok_apps_progids_matched += 1;
+        }
+        apps_progids_details.push((entry, bound));
+    }
+
+    let user_choice_detail = user_choice_prog_id(&hkcu, &ext).map(|prog_id| {
+        if let Some(app) = prog_id.strip_prefix("Applications\\") {
+            let bound = check_application_binding(&hkcu, app, &catid);
+            (prog_id, bound)
+        } else {
+            let bound = check_prog_id_application(&hkcu, &prog_id, &catid);
+            (prog_id, bound)
+        }
+    });
+
+    let ok_user_choice = user_choice_detail
+        .as_ref()
+        .map(|(_, ok)| if *ok { "OK" } else { "NO" })
+        .unwrap_or("N/A");
+
+    Ok(StatusReport {
+        ok_clsid,
+        ok_inproc,
+        ok_bind_prog: ok_prog,
+        ok_bind_ext: ok_ext,
+        ok_bind_sys: ok_sys,
+        ok_apps_list_matched,
+        apps_list_total: apps_list_details.len(),
+        ok_apps_progids_matched,
+        apps_progids_total: apps_progids_details.len(),
+        ok_user_choice,
+        apps_list_details,
+        apps_progids_details,
+        user_choice_detail,
+    })
 }
 
 /* ---------- Utils ---------- */
@@ -499,6 +627,40 @@ fn user_choice_prog_id(hkcu: &RegKey, ext: &str) -> Option<String> {
         .and_then(|key| key.get_value::<String, _>("ProgId").ok())
         .map(|s| s.trim_matches(char::from(0)).to_string())
         .filter(|s| !s.is_empty())
+}
+
+fn check_application_binding(hkcu: &RegKey, entry: &str, catid: &str) -> bool {
+    if entry.is_empty() {
+        return false;
+    }
+
+    if !entry.ends_with(".exe") {
+        return check_prog_id_application(hkcu, entry, catid);
+    }
+
+    hkcu
+        .open_subkey(format!(
+            r"Software\Classes\Applications\{}\ShellEx\{}",
+            entry, catid
+        ))
+        .is_ok()
+}
+
+fn check_prog_id_application(hkcu: &RegKey, progid: &str, catid: &str) -> bool {
+    if progid.is_empty() {
+        return false;
+    }
+
+    if let Some(app) = progid.strip_prefix("Applications\\") {
+        return check_application_binding(hkcu, app, catid);
+    }
+
+    hkcu
+        .open_subkey(format!(
+            r"Software\Classes\{}\ShellEx\{}",
+            progid, catid
+        ))
+        .is_ok()
 }
 
 fn bind_application(
