@@ -1,5 +1,6 @@
 use crate::DLL_LOCK_COUNT;
 use crate::thumbnail_provider::BlpThumbProvider;
+use crate::log_desktop;
 use std::ffi::c_void;
 use std::ptr::null_mut;
 use std::sync::atomic::Ordering;
@@ -28,6 +29,10 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
         }
         unsafe {
             *ppv = null_mut();
+        }
+
+        if let Err(err) = log_desktop("BlpClassFactory::CreateInstance called") {
+            eprintln!("[dll log] {err}");
         }
 
         let unk: IUnknown = BlpThumbProvider::new().into();
@@ -62,8 +67,10 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
     fn LockServer(&self, f_lock: BOOL) -> windows::core::Result<()> {
         if f_lock.as_bool() {
             DLL_LOCK_COUNT.fetch_add(1, Ordering::SeqCst);
+            let _ = log_desktop("BlpClassFactory::LockServer lock");
         } else {
             DLL_LOCK_COUNT.fetch_sub(1, Ordering::SeqCst);
+            let _ = log_desktop("BlpClassFactory::LockServer unlock");
         }
         Ok(())
     }

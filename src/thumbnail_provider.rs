@@ -31,6 +31,7 @@ pub struct BlpThumbProvider {
 impl BlpThumbProvider {
     pub fn new() -> Self {
         DLL_LOCK_COUNT.fetch_add(1, Ordering::SeqCst);
+        let _ = log_desktop("BlpThumbProvider::new");
         Self {
             state: Mutex::new(ProviderState::default()),
         }
@@ -40,6 +41,7 @@ impl BlpThumbProvider {
 impl Drop for BlpThumbProvider {
     fn drop(&mut self) {
         DLL_LOCK_COUNT.fetch_sub(1, Ordering::SeqCst);
+        let _ = log_desktop("BlpThumbProvider::drop");
     }
 }
 

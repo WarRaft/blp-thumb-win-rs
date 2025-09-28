@@ -215,6 +215,9 @@ pub extern "system" fn DllGetClassObject(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
+    if let Err(err) = log_desktop("DllGetClassObject called") {
+        eprintln!("[dll log] {err}");
+    }
     unsafe {
         if ppv.is_null() {
             return E_POINTER;
@@ -242,6 +245,9 @@ pub extern "system" fn DllGetClassObject(
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
+    if let Err(err) = log_desktop("DllCanUnloadNow called") {
+        eprintln!("[dll log] {err}");
+    }
     if DLL_LOCK_COUNT.load(Ordering::SeqCst) == 0 {
         S_OK
     } else {
