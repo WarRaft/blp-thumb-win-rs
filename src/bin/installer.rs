@@ -307,11 +307,21 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
         key_thumb.set_value("", &clsid)?;
     }
 
-    // Always also bind under the extension itself (defensive).
+    // Bind under the extension itself.
     log_cli(format!("Register COM: binding under extension {}", ext));
     let (key_ext_shellex, _) = hkcu.create_subkey(format!(r"Software\Classes\{}\ShellEx", ext))?;
     let (key_ext_thumb, _) = key_ext_shellex.create_subkey(&catid)?;
     key_ext_thumb.set_value("", &clsid)?;
+
+    // Bind under SystemFileAssociations too (Explorer often checks here).
+    log_cli(format!(
+        "Register COM: binding under SystemFileAssociations {}",
+        ext
+    ));
+    let (key_sys_shellex, _) = hkcu
+        .create_subkey(format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx", ext))?;
+    let (key_sys_thumb, _) = key_sys_shellex.create_subkey(&catid)?;
+    key_sys_thumb.set_value("", &clsid)?;
 
     log_cli("Register COM: completed");
 
@@ -335,6 +345,12 @@ fn unregister_com() -> io::Result<()> {
         ext
     ));
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid));
+    log_cli(format!(
+        "Unregister COM: removing SystemFileAssociations binding {}",
+        ext
+    ));
+    let _ = hkcu
+        .delete_subkey_all(format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}", ext, catid));
     log_cli("Unregister COM: removing CLSID keys");
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
     let _ = hkcu
