@@ -10,7 +10,7 @@ use dialoguer::console::style;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Select, console::Term};
 use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
-use winreg::{RegKey, enums::*};
+use winreg::{RegKey, RegType, RegValue, enums::*};
 
 // Embedded DLL that you copy into ./bin/ at build time.
 // The EXE will re-materialize it under %LOCALAPPDATA%\blp-thumb-win\
@@ -162,7 +162,19 @@ fn install() -> io::Result<()> {
     ));
     register_com(&dll_path)?;
     log_cli("Install: registry entries written");
+    clear_shell_ext_cache(&clsid_str())?;
     notify_shell_assoc("install");
+    let report = probe_status()?;
+    if !report.is_ready() {
+        for alert in &report.alerts {
+            log_cli(format!("Install verify alert: {}", alert));
+        }
+        println!("Post-install verification failed. Run 'Status' for detailed report.");
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "post-install verification failed",
+        ));
+    }
     println!("Installed in HKCU. Use 'Restart Explorer' to refresh thumbnails.");
     Ok(())
 }
@@ -216,6 +228,19 @@ fn status() -> io::Result<()> {
         mark(report.ext_default_matches)
     );
     println!(
+        "  HKCR effective binding:      {}",
+        report.hkcr_binding.as_deref().unwrap_or("<missing>")
+    );
+    println!(
+        "  HKCR binding matches:        {}",
+        mark(report.hkcr_binding_matches)
+    );
+    println!(
+        "  HKLM binding (ProgID/Ext):   {}/{}",
+        presence(report.hklm_bind_prog),
+        presence(report.hklm_bind_ext)
+    );
+    println!(
         "  Applications OpenWithList:   {}/{}",
         report.ok_apps_list_matched, report.apps_list_total
     );
@@ -232,6 +257,7 @@ fn status() -> io::Result<()> {
         "  CoCreateInstance test:       {}",
         report.com_create_status
     );
+    println!("  Overall ready:               {}", mark(report.is_ready()));
     if !report.alerts.is_empty() {
         for alert in &report.alerts {
             println!("  ALERT: {}", alert);
@@ -252,24 +278,35 @@ fn status() -> io::Result<()> {
         }
     }
 
+    if !report.cached_entries.is_empty() {
+        println!("\n  Shell Extensions Cached:");
+        for (name, state) in &report.cached_entries {
+            match state {
+                Some(val) => println!("    {:<60} state=0x{:08X}", name, val),
+                None => println!("    {:<60} state=<unknown>", name),
+            }
+        }
+    }
+
     if let Some(choice) = report.user_choice_detail {
         println!("\n  UserChoice:");
         println!("    {:<30} {}", choice.0, mark(choice.1));
     }
 
     log_cli(format!(
-        "Status summary -> CLSID: {}, Inproc: {}, DPI: {}, InprocFile: {}, ProgID bind: {}, Ext bind: {}, SysAssoc bind: {}, Explorer handlers: {}, AppsList OK: {}/{}, CoCreate: {}",
+        "Status summary -> CLSID: {}, Inproc: {}, DPI: {}, InprocFile: {}, HKCR: {}, HKLM(prog/ext): {}/{}, Explorer handlers: {}, AppsList OK: {}/{}, CoCreate: {}, Ready: {}",
         mark(report.ok_clsid),
         mark(report.ok_inproc),
         mark(report.disable_process_isolation),
         mark(report.inproc_path_exists),
-        mark(report.ok_bind_prog),
-        mark(report.ok_bind_ext),
-        mark(report.ok_bind_sys),
+        mark(report.hkcr_binding_matches),
+        presence(report.hklm_bind_prog),
+        presence(report.hklm_bind_ext),
         mark(report.ok_thumb_handler),
         report.ok_apps_list_matched,
         report.apps_list_total,
-        report.com_create_status
+        report.com_create_status,
+        mark(report.is_ready())
     ));
     Ok(())
 }
@@ -309,6 +346,49 @@ fn clear_thumb_cache() -> io::Result<()> {
         dir.display()
     ));
     Ok(())
+}
+
+fn clear_shell_ext_cache(clsid: &str) -> io::Result<usize> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let path = r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Cached";
+    let key = match hkcu.open_subkey_with_flags(path, KEY_READ | KEY_SET_VALUE) {
+        Ok(k) => k,
+        Err(err) => {
+            if err.kind() == io::ErrorKind::NotFound {
+                log_cli("Install: shell extension cache key missing");
+                return Ok(0);
+            }
+            return Err(err);
+        }
+    };
+
+    let clsid_upper = clsid.to_ascii_uppercase();
+    let clsid_nobrace = clsid_upper.trim_matches('{').trim_matches('}').to_string();
+    let mut to_delete = Vec::new();
+    for value in key.enum_values() {
+        if let Ok((name, _)) = value {
+            let upper = name.to_ascii_uppercase();
+            if upper.contains(&clsid_upper) || upper.contains(&clsid_nobrace) {
+                to_delete.push(name);
+            }
+        }
+    }
+
+    let mut removed = 0usize;
+    for name in to_delete {
+        if key.delete_value(&name).is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        log_cli(format!(
+            "Install: cleared {} entries from Shell Extensions\\Cached",
+            removed
+        ));
+    } else {
+        log_cli("Install: no cached Shell Extensions entries to clear");
+    }
+    Ok(removed)
 }
 
 fn clear_associations() -> io::Result<()> {
@@ -614,6 +694,11 @@ struct StatusReport {
     inproc_path_exists: bool,
     ext_default_value: Option<String>,
     ext_default_matches: bool,
+    hkcr_binding: Option<String>,
+    hkcr_binding_matches: bool,
+    hklm_bind_prog: bool,
+    hklm_bind_ext: bool,
+    cached_entries: Vec<(String, Option<u32>)>,
     ok_apps_list_matched: usize,
     apps_list_total: usize,
     ok_apps_progids_matched: usize,
@@ -624,6 +709,12 @@ struct StatusReport {
     user_choice_detail: Option<(String, bool)>,
     com_create_status: &'static str,
     alerts: Vec<String>,
+}
+
+impl StatusReport {
+    fn is_ready(&self) -> bool {
+        self.alerts.is_empty() && self.com_create_status == "OK"
+    }
 }
 
 fn probe_status() -> io::Result<StatusReport> {
@@ -677,6 +768,71 @@ fn probe_status() -> io::Result<StatusReport> {
             }
             Err(_) => (None, false),
         };
+
+    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
+    let (hkcr_binding, hkcr_binding_matches) =
+        match hkcr.open_subkey(format!(r"{}\ShellEx\{}", ext, catid)) {
+            Ok(key) => {
+                let val = key
+                    .get_value::<String, _>("")
+                    .ok()
+                    .map(|s| s.trim_matches(char::from(0)).to_string())
+                    .filter(|s| !s.is_empty());
+                let matches = val
+                    .as_ref()
+                    .map(|s| s.eq_ignore_ascii_case(&clsid))
+                    .unwrap_or(false);
+                (val, matches)
+            }
+            Err(_) => (None, false),
+        };
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let hklm_base = hklm.open_subkey("Software\\Classes").ok();
+    let hklm_bind_prog = hklm_base
+        .as_ref()
+        .and_then(|base| {
+            base.open_subkey(format!(r"{}\ShellEx\{}", DEFAULT_PROGID, catid))
+                .ok()
+        })
+        .is_some();
+    let hklm_bind_ext = hklm_base
+        .as_ref()
+        .and_then(|base| base.open_subkey(format!(r"{}\ShellEx\{}", ext, catid)).ok())
+        .is_some();
+
+    let mut cached_entries = Vec::new();
+    if let Ok(cache_key) =
+        hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Cached")
+    {
+        let clsid_upper = clsid.to_ascii_uppercase();
+        let clsid_nobrace = clsid_upper.trim_matches('{').trim_matches('}').to_string();
+        for value in cache_key.enum_values().flatten() {
+            let name_upper = value.0.to_ascii_uppercase();
+            if name_upper.contains(&clsid_upper) || name_upper.contains(&clsid_nobrace) {
+                let state = match value.1 {
+                    RegValue {
+                        vtype: RegType::REG_BINARY,
+                        ref bytes,
+                    } if bytes.len() >= 4 => {
+                        let mut arr = [0u8; 4];
+                        arr.copy_from_slice(&bytes[..4]);
+                        Some(u32::from_le_bytes(arr))
+                    }
+                    RegValue {
+                        vtype: RegType::REG_DWORD,
+                        ref bytes,
+                    } if bytes.len() >= 4 => {
+                        let mut arr = [0u8; 4];
+                        arr.copy_from_slice(&bytes[..4]);
+                        Some(u32::from_le_bytes(arr))
+                    }
+                    _ => None,
+                };
+                cached_entries.push((value.0, state));
+            }
+        }
+    }
 
     let ok_prog = if let Some(pid) = &progid_opt {
         hkcu.open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", pid, catid))
@@ -775,6 +931,18 @@ fn probe_status() -> io::Result<StatusReport> {
     if !ok_thumb_handler {
         alerts.push("Explorer ThumbnailHandlers mapping missing".to_string());
     }
+    if !hkcr_binding_matches {
+        alerts.push(match &hkcr_binding {
+            Some(val) => format!("HKCR binding points to {}", val),
+            None => "HKCR binding missing".to_string(),
+        });
+    }
+    if hklm_bind_ext || hklm_bind_prog {
+        alerts.push("Machine-level binding present (may override per-user)".to_string());
+    }
+    if !cached_entries.is_empty() {
+        alerts.push("Cached shell extension entry exists (clear may be required)".to_string());
+    }
 
     let mut com_create_status = "FAIL";
     let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
@@ -812,6 +980,11 @@ fn probe_status() -> io::Result<StatusReport> {
         inproc_path_exists,
         ext_default_value,
         ext_default_matches,
+        hkcr_binding,
+        hkcr_binding_matches,
+        hklm_bind_prog,
+        hklm_bind_ext,
+        cached_entries,
         ok_apps_list_matched,
         apps_list_total: apps_list_details.len(),
         ok_apps_progids_matched,
@@ -845,6 +1018,10 @@ fn pause(msg: &str) {
 
 fn mark(b: bool) -> &'static str {
     if b { "OK" } else { "NO" }
+}
+
+fn presence(b: bool) -> &'static str {
+    if b { "present" } else { "absent" }
 }
 
 fn open_with_list_entries(hkcu: &RegKey, ext: &str) -> Vec<String> {
