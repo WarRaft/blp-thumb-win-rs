@@ -10,7 +10,7 @@ use dialoguer::console::style;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Select, console::Term};
 use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
-use winreg::{RegKey, RegType, RegValue, enums::*};
+use winreg::{RegKey, RegValue, enums::*};
 
 // Embedded DLL that you copy into ./bin/ at build time.
 // The EXE will re-materialize it under %LOCALAPPDATA%\blp-thumb-win\
@@ -266,15 +266,15 @@ fn status() -> io::Result<()> {
 
     if report.apps_list_total > 0 {
         println!("\n  OpenWithList entries:");
-        for (entry, bound) in report.apps_list_details {
-            println!("    {:<30} {}", entry, mark(bound));
+        for (entry, bound) in &report.apps_list_details {
+            println!("    {:<30} {}", entry, mark(*bound));
         }
     }
 
     if report.apps_progids_total > 0 {
         println!("\n  OpenWithProgids entries:");
-        for (entry, bound) in report.apps_progids_details {
-            println!("    {:<30} {}", entry, mark(bound));
+        for (entry, bound) in &report.apps_progids_details {
+            println!("    {:<30} {}", entry, mark(*bound));
         }
     }
 
@@ -288,11 +288,12 @@ fn status() -> io::Result<()> {
         }
     }
 
-    if let Some(choice) = report.user_choice_detail {
+    if let Some((prog_id, bound)) = report.user_choice_detail.as_ref() {
         println!("\n  UserChoice:");
-        println!("    {:<30} {}", choice.0, mark(choice.1));
+        println!("    {:<30} {}", prog_id, mark(*bound));
     }
 
+    let ready = report.is_ready();
     log_cli(format!(
         "Status summary -> CLSID: {}, Inproc: {}, DPI: {}, InprocFile: {}, HKCR: {}, HKLM(prog/ext): {}/{}, Explorer handlers: {}, AppsList OK: {}/{}, CoCreate: {}, Ready: {}",
         mark(report.ok_clsid),
@@ -306,7 +307,7 @@ fn status() -> io::Result<()> {
         report.ok_apps_list_matched,
         report.apps_list_total,
         report.com_create_status,
-        mark(report.is_ready())
+        mark(ready)
     ));
     Ok(())
 }
