@@ -207,18 +207,27 @@ fn install() -> io::Result<()> {
     clear_shell_ext_cache_scope(RegistryScope::CurrentUser, &clsid)?;
     enforce_thumbnail_settings_scope(RegistryScope::CurrentUser)?;
     notify_shell_assoc("install");
-    let report = probe_status()?;
-    if !report.is_ready() {
-        for alert in &report.alerts {
-            log_cli(format!("Install verify alert: {}", alert));
+    match probe_status() {
+        Ok(report) => {
+            if !report.is_ready() {
+                for alert in &report.alerts {
+                    log_cli(format!("Install verify alert: {}", alert));
+                }
+                println!(
+                    "Install finished, but verification found issues. Run 'Status' for details."
+                );
+            } else {
+                println!("Installed in HKCU. Use 'Restart Explorer' to refresh thumbnails.");
+            }
         }
-        println!("Post-install verification failed. Run 'Status' for detailed report.");
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "post-install verification failed",
-        ));
+        Err(err) => {
+            log_cli(format!("Install: probe_status failed: {}", err));
+            println!(
+                "Installed in HKCU, but verification failed ({}). Run 'Status' manually.",
+                err
+            );
+        }
     }
-    println!("Installed in HKCU. Use 'Restart Explorer' to refresh thumbnails.");
     Ok(())
 }
 
@@ -238,27 +247,60 @@ fn install_all_users() -> io::Result<()> {
         "InstallAllUsers: DLL materialized to {}",
         dll_path.display()
     ));
-    register_com_scope(RegistryScope::LocalMachine, &dll_path)?;
-    register_com_scope(RegistryScope::CurrentUser, &dll_path)?;
-    log_cli("InstallAllUsers: registry entries written");
-    let clsid = clsid_str();
-    clear_shell_ext_cache_scope(RegistryScope::LocalMachine, &clsid)?;
-    clear_shell_ext_cache_scope(RegistryScope::CurrentUser, &clsid)?;
-    enforce_thumbnail_settings_scope(RegistryScope::LocalMachine)?;
-    enforce_thumbnail_settings_scope(RegistryScope::CurrentUser)?;
-    notify_shell_assoc("install-all");
-    let report = probe_status()?;
-    if !report.is_ready() {
-        for alert in &report.alerts {
-            log_cli(format!("InstallAllUsers verify alert: {}", alert));
-        }
-        println!("Post-install verification failed. Run 'Status' for detailed report.");
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "post-install verification failed",
-        ));
+    let mut warnings = Vec::new();
+    if let Err(err) = register_com_scope(RegistryScope::LocalMachine, &dll_path) {
+        warnings.push(format!("HKLM registration failed: {}", err));
     }
-    println!("Installed in HKLM and HKCU. Use 'Restart Explorer' to refresh thumbnails.");
+    if let Err(err) = register_com_scope(RegistryScope::CurrentUser, &dll_path) {
+        warnings.push(format!("HKCU registration failed: {}", err));
+    }
+    if warnings.is_empty() {
+        log_cli("InstallAllUsers: registry entries written");
+    } else {
+        for warn in &warnings {
+            log_cli(format!("InstallAllUsers warning: {}", warn));
+        }
+    }
+
+    let clsid = clsid_str();
+    for scope in [RegistryScope::LocalMachine, RegistryScope::CurrentUser] {
+        if let Err(err) = clear_shell_ext_cache_scope(scope, &clsid) {
+            warnings.push(format!("{} cache clear failed: {}", scope.name(), err));
+        }
+        if let Err(err) = enforce_thumbnail_settings_scope(scope) {
+            warnings.push(format!(
+                "{} thumbnail settings failed: {}",
+                scope.name(),
+                err
+            ));
+        }
+    }
+
+    notify_shell_assoc("install-all");
+
+    match probe_status() {
+        Ok(report) => {
+            if !report.is_ready() {
+                for alert in &report.alerts {
+                    log_cli(format!("InstallAllUsers verify alert: {}", alert));
+                }
+                warnings.push("Verification reported issues; see Status".to_string());
+            }
+        }
+        Err(err) => {
+            warnings.push(format!("Verification failed: {}", err));
+            log_cli(format!("InstallAllUsers: probe_status failed: {}", err));
+        }
+    }
+
+    if warnings.is_empty() {
+        println!("Installed in HKLM and HKCU. Use 'Restart Explorer' to refresh thumbnails.");
+    } else {
+        println!("Install completed with warnings:");
+        for warn in warnings {
+            println!("  - {}", warn);
+        }
+    }
     Ok(())
 }
 
