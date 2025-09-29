@@ -163,6 +163,7 @@ fn install() -> io::Result<()> {
     register_com(&dll_path)?;
     log_cli("Install: registry entries written");
     clear_shell_ext_cache(&clsid_str())?;
+    enforce_thumbnail_settings()?;
     notify_shell_assoc("install");
     let report = probe_status()?;
     if !report.is_ready() {
@@ -241,6 +242,27 @@ fn status() -> io::Result<()> {
         presence(report.hklm_bind_ext)
     );
     println!(
+        "  Explorer IconsOnly:          {} (value={})",
+        mark(report.icons_only_ok),
+        format_u32_opt(report.icons_only_value)
+    );
+    println!(
+        "  Explorer DisableThumbnails:  {} (value={})",
+        mark(report.disable_thumbnails_ok),
+        format_u32_opt(report.disable_thumbnails_value)
+    );
+    println!(
+        "  Explorer DisableThumbCache:  {} (value={})",
+        mark(report.disable_thumbnail_cache_ok),
+        format_u32_opt(report.disable_thumbnail_cache_value)
+    );
+    println!(
+        "  Explorer DisableNetworkThumbs:{} (value={})",
+        mark(report.disable_network_ok),
+        format_u32_opt(report.disable_network_value)
+    );
+    println!("  Explorer policies allow:     {}", mark(report.policy_ok));
+    println!(
         "  Applications OpenWithList:   {}/{}",
         report.ok_apps_list_matched, report.apps_list_total
     );
@@ -254,7 +276,7 @@ fn status() -> io::Result<()> {
         mark(report.ok_thumb_handler)
     );
     println!(
-        "  CoCreateInstance test:       {}",
+        "  CoCreateInstance test:       {} (installer self-check)",
         report.com_create_status
     );
     println!("  Overall ready:               {}", mark(report.is_ready()));
@@ -288,6 +310,13 @@ fn status() -> io::Result<()> {
         }
     }
 
+    if !report.policy_values.is_empty() {
+        println!("\n  Explorer policy overrides:");
+        for (path, value) in &report.policy_values {
+            println!("    {:<80} value={}", path, value);
+        }
+    }
+
     if let Some((prog_id, bound)) = report.user_choice_detail.as_ref() {
         println!("\n  UserChoice:");
         println!("    {:<30} {}", prog_id, mark(*bound));
@@ -295,7 +324,7 @@ fn status() -> io::Result<()> {
 
     let ready = report.is_ready();
     log_cli(format!(
-        "Status summary -> CLSID: {}, Inproc: {}, DPI: {}, InprocFile: {}, HKCR: {}, HKLM(prog/ext): {}/{}, Explorer handlers: {}, AppsList OK: {}/{}, CoCreate: {}, Ready: {}",
+        "Status summary -> CLSID: {}, Inproc: {}, DPI: {}, InprocFile: {}, HKCR: {}, HKLM(prog/ext): {}/{}, Explorer handlers: {}, AppsList OK: {}/{}, Thumb settings: {}, CoCreate: {}, Ready: {}",
         mark(report.ok_clsid),
         mark(report.ok_inproc),
         mark(report.disable_process_isolation),
@@ -306,6 +335,7 @@ fn status() -> io::Result<()> {
         mark(report.ok_thumb_handler),
         report.ok_apps_list_matched,
         report.apps_list_total,
+        mark(report.thumbnail_settings_ok),
         report.com_create_status,
         mark(ready)
     ));
@@ -390,6 +420,38 @@ fn clear_shell_ext_cache(clsid: &str) -> io::Result<usize> {
         log_cli("Install: no cached Shell Extensions entries to clear");
     }
     Ok(removed)
+}
+
+fn enforce_thumbnail_settings() -> io::Result<()> {
+    log_cli("Install: enforcing Explorer thumbnail settings");
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+
+    let (advanced, _) =
+        hkcu.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced")?;
+    advanced.set_value("IconsOnly", &0u32)?;
+    advanced.set_value("DisableThumbnails", &0u32)?;
+    advanced.set_value("DisableThumbnailCache", &0u32)?;
+    advanced.set_value("DisableThumbnailsOnNetworkFolders", &0u32)?;
+
+    const POLICY_PATHS: [&str; 2] = [
+        r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+        r"Software\Policies\Microsoft\Windows\Explorer",
+    ];
+    const POLICY_VALUES: [&str; 3] = [
+        "DisableThumbnails",
+        "DisableThumbnailCache",
+        "DisableThumbnailsOnNetworkFolders",
+    ];
+
+    for path in POLICY_PATHS {
+        if let Ok((key, _)) = hkcu.create_subkey(path) {
+            for name in POLICY_VALUES {
+                key.set_value(name, &0u32)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn clear_associations() -> io::Result<()> {
@@ -700,6 +762,17 @@ struct StatusReport {
     hklm_bind_prog: bool,
     hklm_bind_ext: bool,
     cached_entries: Vec<(String, Option<u32>)>,
+    icons_only_value: Option<u32>,
+    icons_only_ok: bool,
+    disable_thumbnails_value: Option<u32>,
+    disable_thumbnails_ok: bool,
+    disable_thumbnail_cache_value: Option<u32>,
+    disable_thumbnail_cache_ok: bool,
+    disable_network_value: Option<u32>,
+    disable_network_ok: bool,
+    policy_values: Vec<(String, u32)>,
+    policy_ok: bool,
+    thumbnail_settings_ok: bool,
     ok_apps_list_matched: usize,
     apps_list_total: usize,
     ok_apps_progids_matched: usize,
@@ -714,7 +787,7 @@ struct StatusReport {
 
 impl StatusReport {
     fn is_ready(&self) -> bool {
-        self.alerts.is_empty() && self.com_create_status == "OK"
+        self.alerts.is_empty() && self.com_create_status == "OK" && self.thumbnail_settings_ok
     }
 }
 
@@ -769,6 +842,29 @@ fn probe_status() -> io::Result<StatusReport> {
             }
             Err(_) => (None, false),
         };
+
+    let advanced_key = hkcu
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced")
+        .ok();
+    let icons_only_value = advanced_key
+        .as_ref()
+        .and_then(|key| key.get_value::<u32, _>("IconsOnly").ok());
+    let icons_only_ok = icons_only_value.map(|v| v == 0).unwrap_or(true);
+    let disable_thumbnails_value = advanced_key
+        .as_ref()
+        .and_then(|key| key.get_value::<u32, _>("DisableThumbnails").ok());
+    let disable_thumbnails_ok = disable_thumbnails_value.map(|v| v == 0).unwrap_or(true);
+    let disable_thumbnail_cache_value = advanced_key
+        .as_ref()
+        .and_then(|key| key.get_value::<u32, _>("DisableThumbnailCache").ok());
+    let disable_thumbnail_cache_ok = disable_thumbnail_cache_value
+        .map(|v| v == 0)
+        .unwrap_or(true);
+    let disable_network_value = advanced_key.as_ref().and_then(|key| {
+        key.get_value::<u32, _>("DisableThumbnailsOnNetworkFolders")
+            .ok()
+    });
+    let disable_network_ok = disable_network_value.map(|v| v == 0).unwrap_or(true);
 
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
     let (hkcr_binding, hkcr_binding_matches) =
@@ -831,6 +927,30 @@ fn probe_status() -> io::Result<StatusReport> {
                     _ => None,
                 };
                 cached_entries.push((value.0, state));
+            }
+        }
+    }
+
+    let mut policy_values = Vec::new();
+    let mut policy_ok = true;
+    const POLICY_PATHS: [&str; 2] = [
+        r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+        r"Software\Policies\Microsoft\Windows\Explorer",
+    ];
+    const POLICY_NAMES: [&str; 3] = [
+        "DisableThumbnails",
+        "DisableThumbnailCache",
+        "DisableThumbnailsOnNetworkFolders",
+    ];
+    for path in POLICY_PATHS {
+        if let Ok(key) = hkcu.open_subkey(path) {
+            for name in POLICY_NAMES {
+                if let Ok(value) = key.get_value::<u32, _>(name) {
+                    if value != 0 {
+                        policy_ok = false;
+                        policy_values.push((format!(r"{}\{}", path, name), value));
+                    }
+                }
             }
         }
     }
@@ -944,6 +1064,33 @@ fn probe_status() -> io::Result<StatusReport> {
     if !cached_entries.is_empty() {
         alerts.push("Cached shell extension entry exists (clear may be required)".to_string());
     }
+    if !icons_only_ok {
+        alerts.push(format!(
+            "Explorer setting IconsOnly disables thumbnails (value={})",
+            format_u32_opt(icons_only_value)
+        ));
+    }
+    if !disable_thumbnails_ok {
+        alerts.push(format!(
+            "Explorer setting DisableThumbnails is non-zero (value={})",
+            format_u32_opt(disable_thumbnails_value)
+        ));
+    }
+    if !disable_thumbnail_cache_ok {
+        alerts.push(format!(
+            "Explorer setting DisableThumbnailCache is non-zero (value={})",
+            format_u32_opt(disable_thumbnail_cache_value)
+        ));
+    }
+    if !disable_network_ok {
+        alerts.push(format!(
+            "Explorer setting DisableThumbnailsOnNetworkFolders is non-zero (value={})",
+            format_u32_opt(disable_network_value)
+        ));
+    }
+    if !policy_ok {
+        alerts.push("Explorer policies disable thumbnails".to_string());
+    }
 
     let mut com_create_status = "FAIL";
     let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
@@ -969,6 +1116,12 @@ fn probe_status() -> io::Result<StatusReport> {
         log_cli(format!("Status: CoInitializeEx failed: {:?}", hr));
     }
 
+    let thumbnail_settings_ok = icons_only_ok
+        && disable_thumbnails_ok
+        && disable_thumbnail_cache_ok
+        && disable_network_ok
+        && policy_ok;
+
     Ok(StatusReport {
         ok_clsid,
         ok_inproc,
@@ -986,6 +1139,17 @@ fn probe_status() -> io::Result<StatusReport> {
         hklm_bind_prog,
         hklm_bind_ext,
         cached_entries,
+        icons_only_value,
+        icons_only_ok,
+        disable_thumbnails_value,
+        disable_thumbnails_ok,
+        disable_thumbnail_cache_value,
+        disable_thumbnail_cache_ok,
+        disable_network_value,
+        disable_network_ok,
+        policy_values,
+        policy_ok,
+        thumbnail_settings_ok,
         ok_apps_list_matched,
         apps_list_total: apps_list_details.len(),
         ok_apps_progids_matched,
@@ -1023,6 +1187,12 @@ fn mark(b: bool) -> &'static str {
 
 fn presence(b: bool) -> &'static str {
     if b { "present" } else { "absent" }
+}
+
+fn format_u32_opt(value: Option<u32>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "<missing>".to_string())
 }
 
 fn open_with_list_entries(hkcu: &RegKey, ext: &str) -> Vec<String> {
