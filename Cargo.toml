@@ -1,6 +1,6 @@
 [package]
 name = "blp-thumb-win"
-version = "0.1.35"
+version = "0.1.36"
 edition = "2024"
 authors = ["nazarpunk <nazarpunk@gmail.com>"]
 license = "MIT"
