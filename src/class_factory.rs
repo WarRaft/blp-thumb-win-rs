@@ -1,6 +1,6 @@
 use crate::DLL_LOCK_COUNT;
-use crate::thumbnail_provider::BlpThumbProvider;
 use crate::log_desktop;
+use crate::thumbnail_provider::BlpThumbProvider;
 use std::ffi::c_void;
 use std::ptr::null_mut;
 use std::sync::atomic::Ordering;
@@ -20,7 +20,9 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
         ppv: *mut *mut c_void,
     ) -> windows::core::Result<()> {
         use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER};
-        use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithStream};
+        use windows::Win32::UI::Shell::PropertiesSystem::{
+            IInitializeWithFile, IInitializeWithStream,
+        };
         use windows::Win32::UI::Shell::{IInitializeWithItem, IThumbnailProvider};
         use windows::core::{Error, IUnknown, Interface};
 

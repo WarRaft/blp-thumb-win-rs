@@ -1,10 +1,10 @@
 use crate::{
-    create_hbitmap_bgra_premul, decode_blp_rgba, resize_fit_rgba, rgba_to_bgra_premul, log_desktop,
-    DLL_LOCK_COUNT, ProviderState,
+    DLL_LOCK_COUNT, ProviderState, create_hbitmap_bgra_premul, decode_blp_rgba, log_desktop,
+    resize_fit_rgba, rgba_to_bgra_premul,
 };
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
 use windows_implement::implement;
 
@@ -13,8 +13,9 @@ use windows::Win32::System::Com::{ISequentialStream, IStream, STREAM_SEEK_SET};
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IInitializeWithFile_Impl, IInitializeWithStream_Impl,
 };
-use windows::Win32::UI::Shell::{IInitializeWithItem_Impl, IShellItem, SIGDN_FILESYSPATH, WTS_ALPHATYPE,
-    WTSAT_ARGB};
+use windows::Win32::UI::Shell::{
+    IInitializeWithItem_Impl, IShellItem, SIGDN_FILESYSPATH, WTS_ALPHATYPE, WTSAT_ARGB,
+};
 use windows::core::{Interface, Result as WinResult};
 use windows_core::{PCWSTR, PWSTR};
 
@@ -80,11 +81,7 @@ impl IInitializeWithItem_Impl for BlpThumbProvider_Impl {
 
 impl IInitializeWithFile_Impl for BlpThumbProvider_Impl {
     #[allow(non_snake_case)]
-    fn Initialize(
-        &self,
-        psz_file_path: &PCWSTR,
-        _grf_mode: u32,
-    ) -> windows::core::Result<()> {
+    fn Initialize(&self, psz_file_path: &PCWSTR, _grf_mode: u32) -> windows::core::Result<()> {
         use windows::Win32::Foundation::E_FAIL;
 
         if psz_file_path.is_null() || psz_file_path.0.is_null() {
@@ -225,11 +222,7 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
             })?;
             let _ = log_desktop(format!("GetThumbnail: reading from file {}", path));
             let raw = std::fs::read(&path).map_err(|err| {
-                let _ = log_desktop(format!(
-                    "GetThumbnail: read failed for {} ({})",
-                    path,
-                    err
-                ));
+                let _ = log_desktop(format!("GetThumbnail: read failed for {} ({})", path, err));
                 Error::from(E_FAIL)
             })?;
             Arc::from(raw)
@@ -254,12 +247,7 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
 
         let _ = log_desktop(format!(
             "GetThumbnail: decoded {}x{} -> {}x{} (stream={}, bytes={})",
-            w,
-            h,
-            tw,
-            th,
-            using_stream,
-            data_len
+            w, h, tw, th, using_stream, data_len
         ));
 
         // RGBA → BGRA premultiplied
@@ -274,9 +262,7 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
         }
         let _ = log_desktop(format!(
             "GetThumbnail: success ({}x{}, stream={})",
-            tw,
-            th,
-            using_stream
+            tw, th, using_stream
         ));
         Ok(())
     }

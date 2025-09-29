@@ -25,11 +25,12 @@ use blp_thumb_win::keys::{
     CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME, clsid_str,
     shell_thumb_handler_catid_str,
 };
-use windows::core::IUnknown;
 use windows::Win32::Foundation::{S_FALSE, S_OK};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+    CoUninitialize,
 };
+use windows::core::IUnknown;
 
 #[path = "installer/restart_explorer.rs"]
 mod restart_explorer;
@@ -183,6 +184,18 @@ fn status() -> io::Result<()> {
     println!("  CLSID key:                   {}", mark(report.ok_clsid));
     println!("  InprocServer32 value:        {}", mark(report.ok_inproc));
     println!(
+        "  DisableProcessIsolation:      {}",
+        mark(report.disable_process_isolation)
+    );
+    println!(
+        "  InprocServer32 path:         {}",
+        report.inproc_server_path.as_deref().unwrap_or("<missing>")
+    );
+    println!(
+        "  InprocServer32 file:         {}",
+        mark(report.inproc_path_exists)
+    );
+    println!(
         "  ShellEx bind (ProgID):       {}",
         mark(report.ok_bind_prog)
     );
@@ -195,6 +208,14 @@ fn status() -> io::Result<()> {
         mark(report.ok_bind_sys)
     );
     println!(
+        "  Extension default ProgID:    {}",
+        report.ext_default_value.as_deref().unwrap_or("<missing>")
+    );
+    println!(
+        "  Extension default matches:   {}",
+        mark(report.ext_default_matches)
+    );
+    println!(
         "  Applications OpenWithList:   {}/{}",
         report.ok_apps_list_matched, report.apps_list_total
     );
@@ -203,8 +224,14 @@ fn status() -> io::Result<()> {
         report.ok_apps_progids_matched, report.apps_progids_total
     );
     println!("  UserChoice target:           {}", report.ok_user_choice);
-    println!("  Explorer ThumbnailHandlers:  {}", mark(report.ok_thumb_handler));
-    println!("  CoCreateInstance test:       {}", report.com_create_status);
+    println!(
+        "  Explorer ThumbnailHandlers:  {}",
+        mark(report.ok_thumb_handler)
+    );
+    println!(
+        "  CoCreateInstance test:       {}",
+        report.com_create_status
+    );
     if !report.alerts.is_empty() {
         for alert in &report.alerts {
             println!("  ALERT: {}", alert);
@@ -231,9 +258,11 @@ fn status() -> io::Result<()> {
     }
 
     log_cli(format!(
-        "Status summary -> CLSID: {}, Inproc: {}, ProgID bind: {}, Ext bind: {}, SysAssoc bind: {}, Explorer handlers: {}, AppsList OK: {}/{}, CoCreate: {}",
+        "Status summary -> CLSID: {}, Inproc: {}, DPI: {}, InprocFile: {}, ProgID bind: {}, Ext bind: {}, SysAssoc bind: {}, Explorer handlers: {}, AppsList OK: {}/{}, CoCreate: {}",
         mark(report.ok_clsid),
         mark(report.ok_inproc),
+        mark(report.disable_process_isolation),
+        mark(report.inproc_path_exists),
         mark(report.ok_bind_prog),
         mark(report.ok_bind_ext),
         mark(report.ok_bind_sys),
@@ -312,10 +341,7 @@ fn clear_associations() -> io::Result<()> {
         ext
     ));
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}", ext));
-    let _ = hkcu.delete_subkey_all(format!(
-        r"Software\Classes\SystemFileAssociations\{}",
-        ext
-    ));
+    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\SystemFileAssociations\{}", ext));
     if let Ok(thumb_handlers) = hkcu.open_subkey_with_flags(
         r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
         KEY_SET_VALUE,
@@ -473,15 +499,16 @@ fn register_com(dll_path: &Path) -> io::Result<()> {
         "Register COM: binding under SystemFileAssociations {}",
         ext
     ));
-    let (key_sys_shellex, _) = hkcu
-        .create_subkey(format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx", ext))?;
+    let (key_sys_shellex, _) = hkcu.create_subkey(format!(
+        r"Software\Classes\SystemFileAssociations\{}\ShellEx",
+        ext
+    ))?;
     let (key_sys_thumb, _) = key_sys_shellex.create_subkey(&catid)?;
     key_sys_thumb.set_value("", &clsid)?;
 
     log_cli("Register COM: binding under Explorer\\ThumbnailHandlers");
-    let (thumb_handlers, _) = hkcu.create_subkey(
-        r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
-    )?;
+    let (thumb_handlers, _) = hkcu
+        .create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers")?;
     thumb_handlers.set_value(&ext, &clsid)?;
 
     // Bind under Applications referenced in OpenWithList
@@ -582,6 +609,11 @@ struct StatusReport {
     ok_bind_ext: bool,
     ok_bind_sys: bool,
     ok_thumb_handler: bool,
+    disable_process_isolation: bool,
+    inproc_server_path: Option<String>,
+    inproc_path_exists: bool,
+    ext_default_value: Option<String>,
+    ext_default_matches: bool,
     ok_apps_list_matched: usize,
     apps_list_total: usize,
     ok_apps_progids_matched: usize,
@@ -601,12 +633,50 @@ fn probe_status() -> io::Result<StatusReport> {
     let ext = normalize_ext(DEFAULT_EXT);
     let progid_opt = current_progid_of_ext(&ext);
 
-    let ok_clsid = hkcu
-        .open_subkey(format!(r"Software\Classes\CLSID\{}", clsid))
-        .is_ok();
-    let ok_inproc = hkcu
-        .open_subkey(format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid))
-        .is_ok();
+    let (ok_clsid, disable_process_isolation) =
+        match hkcu.open_subkey(format!(r"Software\Classes\CLSID\{}", clsid)) {
+            Ok(key) => {
+                let dpi = key
+                    .get_value::<u32, _>("DisableProcessIsolation")
+                    .unwrap_or(0)
+                    == 1;
+                (true, dpi)
+            }
+            Err(_) => (false, false),
+        };
+    let (ok_inproc, inproc_server_path, inproc_path_exists) =
+        match hkcu.open_subkey(format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid)) {
+            Ok(key) => {
+                let path = key
+                    .get_value::<String, _>("")
+                    .ok()
+                    .map(|s| s.trim_matches(char::from(0)).to_string())
+                    .filter(|s| !s.is_empty());
+                let exists = path
+                    .as_ref()
+                    .map(|p| Path::new(p).exists())
+                    .unwrap_or(false);
+                (true, path, exists)
+            }
+            Err(_) => (false, None, false),
+        };
+
+    let (ext_default_value, ext_default_matches) =
+        match hkcu.open_subkey(format!(r"Software\Classes\{}", ext)) {
+            Ok(key) => {
+                let val = key
+                    .get_value::<String, _>("")
+                    .ok()
+                    .map(|s| s.trim_matches(char::from(0)).to_string())
+                    .filter(|s| !s.is_empty());
+                let matches = val
+                    .as_ref()
+                    .map(|s| s.eq_ignore_ascii_case(DEFAULT_PROGID))
+                    .unwrap_or(false);
+                (val, matches)
+            }
+            Err(_) => (None, false),
+        };
 
     let ok_prog = if let Some(pid) = &progid_opt {
         hkcu.open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", pid, catid))
@@ -679,6 +749,22 @@ fn probe_status() -> io::Result<StatusReport> {
     if !ok_sys {
         alerts.push("SystemFileAssociations ShellEx binding missing".to_string());
     }
+    if !disable_process_isolation {
+        alerts.push("DisableProcessIsolation not set to 1".to_string());
+    }
+    if !ext_default_matches {
+        alerts.push(match &ext_default_value {
+            Some(val) => format!("Extension default ProgID mismatch (current={})", val),
+            None => "Extension default ProgID missing".to_string(),
+        });
+    }
+    if ok_inproc && !inproc_path_exists {
+        if let Some(path) = &inproc_server_path {
+            alerts.push(format!("InprocServer32 target DLL not found: {}", path));
+        } else {
+            alerts.push("InprocServer32 target DLL not found".to_string());
+        }
+    }
 
     let ok_thumb_handler = hkcu
         .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers")
@@ -721,6 +807,11 @@ fn probe_status() -> io::Result<StatusReport> {
         ok_bind_ext: ok_ext,
         ok_bind_sys: ok_sys,
         ok_thumb_handler,
+        disable_process_isolation,
+        inproc_server_path,
+        inproc_path_exists,
+        ext_default_value,
+        ext_default_matches,
         ok_apps_list_matched,
         apps_list_total: apps_list_details.len(),
         ok_apps_progids_matched,
