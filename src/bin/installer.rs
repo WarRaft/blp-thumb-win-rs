@@ -22,7 +22,8 @@ static DLL_BYTES: &[u8] = include_bytes!(concat!(
 // Single source of truth from the library (your keys module)
 use crate::restart_explorer::restart_explorer;
 use blp_thumb_win::keys::{
-    CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME, clsid_str,
+    CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME,
+    PREVIEW_FRIENDLY_NAME, clsid_str, preview_clsid_str, shell_preview_handler_catid_str,
     shell_thumb_handler_catid_str,
 };
 use windows::Win32::Foundation::{S_FALSE, S_OK};
@@ -77,8 +78,6 @@ enum Action {
     Uninstall,
     Status,
     FixExplorer,
-    InstallAllUsers,
-    UninstallAllUsers,
     RestartExplorer,
     ClearThumbCache,
     ClearAssociations,
@@ -102,12 +101,10 @@ fn menu_theme() -> ColorfulTheme {
 
 fn choose_action() -> io::Result<Action> {
     let items = [
-        "Install (current user)",
-        "Uninstall (current user)",
-        "Status",
-        "Fix Explorer settings",
         "Install (all users)",
         "Uninstall (all users)",
+        "Status",
+        "Fix Explorer settings",
         "Restart Explorer",
         "Clear thumbnail cache",
         "Clear associations",
@@ -125,11 +122,9 @@ fn choose_action() -> io::Result<Action> {
         1 => Action::Uninstall,
         2 => Action::Status,
         3 => Action::FixExplorer,
-        4 => Action::InstallAllUsers,
-        5 => Action::UninstallAllUsers,
-        6 => Action::RestartExplorer,
-        7 => Action::ClearThumbCache,
-        8 => Action::ClearAssociations,
+        4 => Action::RestartExplorer,
+        5 => Action::ClearThumbCache,
+        6 => Action::ClearAssociations,
         _ => Action::Exit,
     })
 }
@@ -137,12 +132,10 @@ fn choose_action() -> io::Result<Action> {
 impl Action {
     fn title(self) -> &'static str {
         match self {
-            Action::Install => "Install (current user)",
-            Action::Uninstall => "Uninstall (current user)",
+            Action::Install => "Install (all users)",
+            Action::Uninstall => "Uninstall (all users)",
             Action::Status => "Status",
             Action::FixExplorer => "Fix Explorer settings",
-            Action::InstallAllUsers => "Install (all users)",
-            Action::UninstallAllUsers => "Uninstall (all users)",
             Action::RestartExplorer => "Restart Explorer",
             Action::ClearThumbCache => "Clear thumbnail cache",
             Action::ClearAssociations => "Clear associations",
@@ -157,8 +150,6 @@ fn execute_action(action: Action) -> io::Result<()> {
         Action::Uninstall => uninstall(),
         Action::Status => status(),
         Action::FixExplorer => fix_explorer(),
-        Action::InstallAllUsers => install_all_users(),
-        Action::UninstallAllUsers => uninstall_all_users(),
         Action::RestartExplorer => restart_explorer(),
         Action::ClearThumbCache => clear_thumb_cache(),
         Action::ClearAssociations => clear_associations(),
@@ -195,56 +186,10 @@ impl RegistryScope {
 /* ---------- Actions ---------- */
 
 fn install() -> io::Result<()> {
-    log_cli("Install: start");
-    let dll_path = materialize_embedded_dll()?;
-    log_cli(format!(
-        "Install: DLL materialized to {}",
-        dll_path.display()
-    ));
-    register_com_scope(RegistryScope::CurrentUser, &dll_path)?;
-    log_cli("Install: registry entries written");
-    let clsid = clsid_str();
-    clear_shell_ext_cache_scope(RegistryScope::CurrentUser, &clsid)?;
-    enforce_thumbnail_settings_scope(RegistryScope::CurrentUser)?;
-    notify_shell_assoc("install");
-    match probe_status() {
-        Ok(report) => {
-            if !report.is_ready() {
-                for alert in &report.alerts {
-                    log_cli(format!("Install verify alert: {}", alert));
-                }
-                println!(
-                    "Install finished, but verification found issues. Run 'Status' for details."
-                );
-            } else {
-                println!("Installed in HKCU. Use 'Restart Explorer' to refresh thumbnails.");
-            }
-        }
-        Err(err) => {
-            log_cli(format!("Install: probe_status failed: {}", err));
-            println!(
-                "Installed in HKCU, but verification failed ({}). Run 'Status' manually.",
-                err
-            );
-        }
-    }
-    Ok(())
-}
-
-fn uninstall() -> io::Result<()> {
-    log_cli("Uninstall: start");
-    unregister_com_scope(RegistryScope::CurrentUser)?;
-    log_cli("Uninstall: registry entries removed");
-    notify_shell_assoc("uninstall");
-    println!("Uninstalled from HKCU.");
-    Ok(())
-}
-
-fn install_all_users() -> io::Result<()> {
-    log_cli("InstallAllUsers: start");
+    log_cli("Install (all users): start");
     let dll_path = materialize_embedded_dll_machine()?;
     log_cli(format!(
-        "InstallAllUsers: DLL materialized to {}",
+        "Install (all users): DLL materialized to {}",
         dll_path.display()
     ));
     let mut warnings = Vec::new();
@@ -255,17 +200,20 @@ fn install_all_users() -> io::Result<()> {
         warnings.push(format!("HKCU registration failed: {}", err));
     }
     if warnings.is_empty() {
-        log_cli("InstallAllUsers: registry entries written");
+        log_cli("Install (all users): registry entries written");
     } else {
         for warn in &warnings {
-            log_cli(format!("InstallAllUsers warning: {}", warn));
+            log_cli(format!("Install warning: {}", warn));
         }
     }
 
-    let clsid = clsid_str();
+    let thumb_clsid = clsid_str();
+    let preview_clsid = preview_clsid_str();
     for scope in [RegistryScope::LocalMachine, RegistryScope::CurrentUser] {
-        if let Err(err) = clear_shell_ext_cache_scope(scope, &clsid) {
-            warnings.push(format!("{} cache clear failed: {}", scope.name(), err));
+        for clsid in [&thumb_clsid, &preview_clsid] {
+            if let Err(err) = clear_shell_ext_cache_scope(scope, clsid) {
+                warnings.push(format!("{} cache clear failed: {}", scope.name(), err));
+            }
         }
         if let Err(err) = enforce_thumbnail_settings_scope(scope) {
             warnings.push(format!(
@@ -282,14 +230,14 @@ fn install_all_users() -> io::Result<()> {
         Ok(report) => {
             if !report.is_ready() {
                 for alert in &report.alerts {
-                    log_cli(format!("InstallAllUsers verify alert: {}", alert));
+                    log_cli(format!("Install verify alert: {}", alert));
                 }
                 warnings.push("Verification reported issues; see Status".to_string());
             }
         }
         Err(err) => {
             warnings.push(format!("Verification failed: {}", err));
-            log_cli(format!("InstallAllUsers: probe_status failed: {}", err));
+            log_cli(format!("Install: probe_status failed: {}", err));
         }
     }
 
@@ -304,8 +252,8 @@ fn install_all_users() -> io::Result<()> {
     Ok(())
 }
 
-fn uninstall_all_users() -> io::Result<()> {
-    log_cli("UninstallAllUsers: start");
+fn uninstall() -> io::Result<()> {
+    log_cli("Uninstall (all users): start");
     unregister_com_scope(RegistryScope::LocalMachine)?;
     unregister_com_scope(RegistryScope::CurrentUser)?;
     notify_shell_assoc("uninstall-all");
@@ -319,30 +267,65 @@ fn status() -> io::Result<()> {
 
     println!("Status (details below):");
     println!("  CLSID key:                   {}", mark(report.ok_clsid));
+    println!(
+        "  Preview CLSID key:           {}",
+        mark(report.ok_preview_clsid)
+    );
     println!("  InprocServer32 value:        {}", mark(report.ok_inproc));
+    println!(
+        "  Preview InprocServer32 value:{}",
+        mark(report.ok_preview_inproc)
+    );
     println!(
         "  DisableProcessIsolation:      {}",
         mark(report.disable_process_isolation)
+    );
+    println!(
+        "  Preview DisableProcessIsolation: {}",
+        mark(report.preview_disable_process_isolation)
     );
     println!(
         "  InprocServer32 path:         {}",
         report.inproc_server_path.as_deref().unwrap_or("<missing>")
     );
     println!(
+        "  Preview InprocServer32 path: {}",
+        report
+            .preview_inproc_server_path
+            .as_deref()
+            .unwrap_or("<missing>")
+    );
+    println!(
         "  InprocServer32 file:         {}",
         mark(report.inproc_path_exists)
+    );
+    println!(
+        "  Preview InprocServer32 file: {}",
+        mark(report.preview_inproc_path_exists)
     );
     println!(
         "  ShellEx bind (ProgID):       {}",
         mark(report.ok_bind_prog)
     );
     println!(
+        "  Preview ShellEx (ProgID):    {}",
+        mark(report.ok_preview_bind_prog)
+    );
+    println!(
         "  ShellEx bind (Ext):          {}",
         mark(report.ok_bind_ext)
     );
     println!(
+        "  Preview ShellEx (Ext):       {}",
+        mark(report.ok_preview_bind_ext)
+    );
+    println!(
         "  ShellEx bind (SysAssoc):     {}",
         mark(report.ok_bind_sys)
+    );
+    println!(
+        "  Preview ShellEx (SysAssoc):  {}",
+        mark(report.ok_preview_bind_sys)
     );
     println!(
         "  Extension default ProgID:    {}",
@@ -357,12 +340,24 @@ fn status() -> io::Result<()> {
         mark(report.machine_ok_clsid)
     );
     println!(
+        "  HKLM preview CLSID key:      {}",
+        mark(report.machine_ok_preview_clsid)
+    );
+    println!(
         "  HKLM InprocServer32 value:   {}",
         mark(report.machine_ok_inproc)
     );
     println!(
+        "  HKLM preview InprocServer32: {}",
+        mark(report.machine_ok_preview_inproc)
+    );
+    println!(
         "  HKLM DisableProcessIsolation:{}",
         mark(report.machine_disable_process_isolation)
+    );
+    println!(
+        "  HKLM preview DisablePI:      {}",
+        mark(report.machine_preview_disable_process_isolation)
     );
     println!(
         "  HKLM InprocServer32 path:    {}",
@@ -372,8 +367,19 @@ fn status() -> io::Result<()> {
             .unwrap_or("<missing>")
     );
     println!(
+        "  HKLM preview Inproc path:    {}",
+        report
+            .machine_preview_inproc_server_path
+            .as_deref()
+            .unwrap_or("<missing>")
+    );
+    println!(
         "  HKLM InprocServer32 file:    {}",
         mark(report.machine_inproc_path_exists)
+    );
+    println!(
+        "  HKLM preview Inproc file:    {}",
+        mark(report.machine_preview_inproc_path_exists)
     );
     println!(
         "  HKLM extension default:      {}",
@@ -391,16 +397,39 @@ fn status() -> io::Result<()> {
         mark(report.machine_ok_bind_prog)
     );
     println!(
+        "  HKLM preview ShellEx (ProgID): {}",
+        mark(report.machine_ok_preview_bind_prog)
+    );
+    println!(
         "  HKLM ShellEx bind (Ext):     {}",
         mark(report.machine_ok_bind_ext)
+    );
+    println!(
+        "  HKLM preview ShellEx (Ext):  {}",
+        mark(report.machine_ok_preview_bind_ext)
     );
     println!(
         "  HKLM ShellEx bind (SysAssoc):{}",
         mark(report.machine_ok_bind_sys)
     );
     println!(
+        "  HKLM preview ShellEx (Sys):  {}",
+        mark(report.machine_ok_preview_bind_sys)
+    );
+    println!(
         "  HKLM Explorer ThumbnailHandlers: {}",
         mark(report.machine_ok_thumb_handler)
+    );
+    println!(
+        "  HKLM PreviewHandlers:        {}",
+        mark(report.machine_ok_preview_handler)
+    );
+    println!(
+        "  HKLM PreviewHandlers value:  {}",
+        report
+            .machine_preview_handler_value
+            .as_deref()
+            .unwrap_or("<missing>")
     );
     println!(
         "  HKCR effective binding:      {}",
@@ -411,9 +440,25 @@ fn status() -> io::Result<()> {
         mark(report.hkcr_binding_matches)
     );
     println!(
+        "  HKCR preview binding:        {}",
+        report
+            .hkcr_preview_binding
+            .as_deref()
+            .unwrap_or("<missing>")
+    );
+    println!(
+        "  HKCR preview matches:        {}",
+        mark(report.hkcr_preview_binding_matches)
+    );
+    println!(
         "  HKLM binding (ProgID/Ext):   {}/{}",
         presence(report.hklm_bind_prog),
         presence(report.hklm_bind_ext)
+    );
+    println!(
+        "  HKLM preview binding (Prog/Ext): {}/{}",
+        presence(report.hklm_preview_bind_prog),
+        presence(report.hklm_preview_bind_ext)
     );
     println!(
         "  Explorer IconsOnly:          {} (value={})",
@@ -448,6 +493,17 @@ fn status() -> io::Result<()> {
     println!(
         "  Explorer ThumbnailHandlers:  {}",
         mark(report.ok_thumb_handler)
+    );
+    println!(
+        "  Explorer PreviewHandlers:    {}",
+        mark(report.ok_preview_handler)
+    );
+    println!(
+        "  PreviewHandlers value:       {}",
+        report
+            .preview_handler_value
+            .as_deref()
+            .unwrap_or("<missing>")
     );
     println!(
         "  CoCreateInstance test:       {} (installer self-check)",
@@ -518,7 +574,8 @@ fn status() -> io::Result<()> {
 
 fn fix_explorer() -> io::Result<()> {
     log_cli("FixExplorer: start");
-    let clsid = clsid_str();
+    let thumb_clsid = clsid_str();
+    let preview_clsid = preview_clsid_str();
     enforce_thumbnail_settings_scope(RegistryScope::CurrentUser)?;
     if let Err(err) = enforce_thumbnail_settings_scope(RegistryScope::LocalMachine) {
         log_cli(format!(
@@ -526,9 +583,11 @@ fn fix_explorer() -> io::Result<()> {
             err
         ));
     }
-    clear_shell_ext_cache_scope(RegistryScope::CurrentUser, &clsid)?;
-    if let Err(err) = clear_shell_ext_cache_scope(RegistryScope::LocalMachine, &clsid) {
-        log_cli(format!("FixExplorer: HKLM cache not cleared ({})", err));
+    for clsid in [&thumb_clsid, &preview_clsid] {
+        clear_shell_ext_cache_scope(RegistryScope::CurrentUser, clsid)?;
+        if let Err(err) = clear_shell_ext_cache_scope(RegistryScope::LocalMachine, clsid) {
+            log_cli(format!("FixExplorer: HKLM cache not cleared ({})", err));
+        }
     }
     notify_shell_assoc("fix-explorer");
     println!("Explorer settings reset. Use 'Restart Explorer' to apply.");
@@ -660,21 +719,36 @@ fn enforce_thumbnail_settings_scope(scope: RegistryScope) -> io::Result<()> {
 fn clear_associations() -> io::Result<()> {
     log_cli("Clear associations: start");
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let clsid = clsid_str();
-    let catid = shell_thumb_handler_catid_str();
+    let thumb_clsid = clsid_str();
+    let thumb_catid = shell_thumb_handler_catid_str();
+    let preview_clsid = preview_clsid_str();
+    let preview_catid = shell_preview_handler_catid_str();
     let ext = normalize_ext(DEFAULT_EXT);
 
+    let classes = [
+        (&thumb_clsid, &thumb_catid),
+        (&preview_clsid, &preview_catid),
+    ];
+
     for entry in open_with_list_entries(&hkcu, &ext) {
-        remove_application_binding(&hkcu, &entry, &catid);
+        for (_, catid) in &classes {
+            remove_application_binding(&hkcu, &entry, catid);
+        }
     }
     for progid in open_with_progids_entries(&hkcu, &ext) {
-        remove_prog_id_application(&hkcu, &progid, &catid);
+        for (_, catid) in &classes {
+            remove_prog_id_application(&hkcu, &progid, catid);
+        }
     }
     if let Some(prog_id) = user_choice_prog_id(&hkcu, &ext) {
         if let Some(app) = prog_id.strip_prefix("Applications\\") {
-            remove_application_binding(&hkcu, app, &catid);
+            for (_, catid) in &classes {
+                remove_application_binding(&hkcu, app, catid);
+            }
         } else {
-            remove_prog_id_application(&hkcu, &prog_id, &catid);
+            for (_, catid) in &classes {
+                remove_prog_id_application(&hkcu, &prog_id, catid);
+            }
         }
         let _ = hkcu.delete_subkey_all(format!(
             r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{}\UserChoice",
@@ -694,14 +768,27 @@ fn clear_associations() -> io::Result<()> {
     ) {
         let _ = thumb_handlers.delete_value(&ext);
     }
+    if let Ok(preview_handlers) = hkcu.open_subkey_with_flags(
+        r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers",
+        KEY_SET_VALUE,
+    ) {
+        let _ = preview_handlers.delete_value(&preview_clsid);
+    }
     let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\WarRaft.BLP"));
-    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
+    for (clsid, _) in &classes {
+        let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
+    }
     let _ = hkcu
         .open_subkey_with_flags(
             r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
             KEY_SET_VALUE,
         )
-        .and_then(|k| k.delete_value(clsid));
+        .and_then(|k| {
+            for (clsid, _) in &classes {
+                let _ = k.delete_value(clsid);
+            }
+            Ok(k)
+        });
 
     log_cli("Clear associations: completed");
     notify_shell_assoc("clear-assoc");
@@ -709,18 +796,6 @@ fn clear_associations() -> io::Result<()> {
 }
 
 /* ---------- Registry / files ---------- */
-
-fn materialize_embedded_dll() -> io::Result<PathBuf> {
-    // %LOCALAPPDATA%\blp-thumb-win\blp_thumb_win.dll (fallback: next to exe)
-    let base = env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let mut p = env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-            p.pop();
-            p
-        });
-    materialize_embedded_dll_at(base)
-}
 
 fn materialize_embedded_dll_machine() -> io::Result<PathBuf> {
     let base = env::var_os("PROGRAMFILES")
@@ -772,44 +847,41 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
     ));
 
     let root = scope.root();
-    let clsid = clsid_str();
-    let catid = shell_thumb_handler_catid_str();
+    let thumb_clsid = clsid_str();
+    let thumb_catid = shell_thumb_handler_catid_str();
+    let preview_clsid = preview_clsid_str();
+    let preview_catid = shell_preview_handler_catid_str();
     let ext = normalize_ext(DEFAULT_EXT);
 
-    log_cli(format!("Register COM [{}]: creating CLSID key", scope_name));
-    let (key_clsid, _) = root.create_subkey(format!(r"Software\Classes\CLSID\{}", clsid))?;
-    key_clsid.set_value("", &FRIENDLY_NAME)?;
-    log_cli(format!(
-        "Register COM [{}]: setting DisableProcessIsolation=1",
-        scope_name
-    ));
-    key_clsid.set_value("DisableProcessIsolation", &1u32)?;
+    let classes = [
+        (FRIENDLY_NAME, &thumb_clsid, &thumb_catid),
+        (PREVIEW_FRIENDLY_NAME, &preview_clsid, &preview_catid),
+    ];
 
-    log_cli(format!(
-        "Register COM [{}]: writing InprocServer32",
-        scope_name
-    ));
-    let (key_inproc, _) =
-        root.create_subkey(format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid))?;
-    key_inproc.set_value("", &dll_path.as_os_str())?;
-    key_inproc.set_value("ThreadingModel", &"Apartment")?;
-
-    log_cli(format!(
-        "Register COM [{}]: marking extension as approved",
-        scope_name
-    ));
     let (approved, _) =
         root.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved")?;
-    approved.set_value(&clsid, &FRIENDLY_NAME)?;
 
-    log_cli(format!(
-        "Register COM [{}]: setting Implemented Categories",
-        scope_name
-    ));
-    let _ = root.create_subkey(format!(
-        r"Software\Classes\CLSID\{}\Implemented Categories\{}",
-        clsid, catid
-    ))?;
+    for (friendly, clsid, catid) in &classes {
+        log_cli(format!(
+            "Register COM [{}]: configuring CLSID {}",
+            scope_name, clsid
+        ));
+        let (key_clsid, _) = root.create_subkey(format!(r"Software\Classes\CLSID\{}", clsid))?;
+        key_clsid.set_value("", friendly)?;
+        key_clsid.set_value("DisableProcessIsolation", &1u32)?;
+
+        let (key_inproc, _) =
+            root.create_subkey(format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid))?;
+        key_inproc.set_value("", &dll_path.as_os_str())?;
+        key_inproc.set_value("ThreadingModel", &"Apartment")?;
+
+        approved.set_value(clsid, friendly)?;
+
+        let _ = root.create_subkey(format!(
+            r"Software\Classes\CLSID\{}\Implemented Categories\{}",
+            clsid, catid
+        ))?;
+    }
 
     log_cli(format!(
         "Register COM [{}]: ensuring extension metadata",
@@ -860,16 +932,20 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         progid_key.set_value("", &FRIENDLY_NAME)?;
     }
     let (pid_shellex, _) = progid_key.create_subkey("ShellEx")?;
-    let (pid_thumb, _) = pid_shellex.create_subkey(&catid)?;
-    pid_thumb.set_value("", &clsid)?;
+    for (_, clsid, catid) in &classes {
+        let (pid_entry, _) = pid_shellex.create_subkey(catid)?;
+        pid_entry.set_value("", &clsid.as_str())?;
+    }
 
     log_cli(format!(
         "Register COM [{}]: binding under extension {}",
         scope_name, ext
     ));
     let (key_ext_shellex, _) = root.create_subkey(format!(r"Software\Classes\{}\ShellEx", ext))?;
-    let (key_ext_thumb, _) = key_ext_shellex.create_subkey(&catid)?;
-    key_ext_thumb.set_value("", &clsid)?;
+    for (_, clsid, catid) in &classes {
+        let (key_ext_entry, _) = key_ext_shellex.create_subkey(catid)?;
+        key_ext_entry.set_value("", &clsid.as_str())?;
+    }
 
     log_cli(format!(
         "Register COM [{}]: binding under SystemFileAssociations {}",
@@ -879,31 +955,44 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         r"Software\Classes\SystemFileAssociations\{}\ShellEx",
         ext
     ))?;
-    let (key_sys_thumb, _) = key_sys_shellex.create_subkey(&catid)?;
-    key_sys_thumb.set_value("", &clsid)?;
+    for (_, clsid, catid) in &classes {
+        let (key_sys_entry, _) = key_sys_shellex.create_subkey(catid)?;
+        key_sys_entry.set_value("", &clsid.as_str())?;
+    }
 
     log_cli(format!(
-        "Register COM [{}]: binding under Explorer\\ThumbnailHandlers",
+        "Register COM [{}]: binding Explorer handlers",
         scope_name
     ));
     let (thumb_handlers, _) = root
         .create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers")?;
-    thumb_handlers.set_value(&ext, &clsid)?;
+    thumb_handlers.set_value(&ext, &thumb_clsid)?;
+    let (preview_handlers, _) =
+        root.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers")?;
+    preview_handlers.set_value(&preview_clsid, &PREVIEW_FRIENDLY_NAME)?;
 
     if scope.is_user() {
         for entry in open_with_list_entries(&root, &ext) {
-            bind_application(&root, &entry, &catid, &clsid)?;
+            for (_, clsid, catid) in &classes {
+                bind_application(&root, &entry, catid, clsid)?;
+            }
         }
 
         for progid in open_with_progids_entries(&root, &ext) {
-            bind_prog_id_application(&root, &progid, &catid, &clsid)?;
+            for (_, clsid, catid) in &classes {
+                bind_prog_id_application(&root, &progid, catid, clsid)?;
+            }
         }
 
         if let Some(prog_id) = user_choice_prog_id(&root, &ext) {
             if let Some(app) = prog_id.strip_prefix("Applications\\") {
-                bind_application(&root, app, &catid, &clsid)?;
+                for (_, clsid, catid) in &classes {
+                    bind_application(&root, app, catid, clsid)?;
+                }
             } else {
-                bind_prog_id_application(&root, &prog_id, &catid, &clsid)?;
+                for (_, clsid, catid) in &classes {
+                    bind_prog_id_application(&root, &prog_id, catid, clsid)?;
+                }
             }
         }
     }
@@ -917,9 +1006,16 @@ fn unregister_com_scope(scope: RegistryScope) -> io::Result<()> {
     let scope_name = scope.name();
     log_cli(format!("Unregister COM [{}]: start", scope_name));
     let root = scope.root();
-    let clsid = clsid_str();
-    let catid = shell_thumb_handler_catid_str();
+    let thumb_clsid = clsid_str();
+    let thumb_catid = shell_thumb_handler_catid_str();
+    let preview_clsid = preview_clsid_str();
+    let preview_catid = shell_preview_handler_catid_str();
     let ext = normalize_ext(DEFAULT_EXT);
+
+    let classes = [
+        (&thumb_clsid, &thumb_catid),
+        (&preview_clsid, &preview_catid),
+    ];
 
     if scope.is_user() {
         if let Some(pid) = current_progid_of_ext(&ext) {
@@ -927,34 +1023,49 @@ fn unregister_com_scope(scope: RegistryScope) -> io::Result<()> {
                 "Unregister COM [{}]: removing ProgID binding {}",
                 scope_name, pid
             ));
-            let _ = root.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", pid, catid));
+            for (_, catid) in &classes {
+                let _ =
+                    root.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", pid, catid));
+            }
         }
     } else {
-        let _ = root.delete_subkey_all(format!(
-            r"Software\Classes\{}\ShellEx\{}",
-            DEFAULT_PROGID, catid
-        ));
+        for (_, catid) in &classes {
+            let _ = root.delete_subkey_all(format!(
+                r"Software\Classes\{}\ShellEx\{}",
+                DEFAULT_PROGID, catid
+            ));
+        }
     }
 
     log_cli(format!(
         "Unregister COM [{}]: removing extension binding {}",
         scope_name, ext
     ));
-    let _ = root.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid));
+    for (_, catid) in &classes {
+        let _ = root.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid));
+    }
     log_cli(format!(
         "Unregister COM [{}]: removing SystemFileAssociations binding {}",
         scope_name, ext
     ));
-    let _ = root.delete_subkey_all(format!(
-        r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
-        ext, catid
-    ));
+    for (_, catid) in &classes {
+        let _ = root.delete_subkey_all(format!(
+            r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
+            ext, catid
+        ));
+    }
 
     if let Ok(thumb_handlers) = root.open_subkey_with_flags(
         r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
         KEY_SET_VALUE,
     ) {
         let _ = thumb_handlers.delete_value(&ext);
+    }
+    if let Ok(preview_handlers) = root.open_subkey_with_flags(
+        r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers",
+        KEY_SET_VALUE,
+    ) {
+        let _ = preview_handlers.delete_value(&preview_clsid);
     }
 
     if let Ok(ext_key) =
@@ -966,18 +1077,26 @@ fn unregister_com_scope(scope: RegistryScope) -> io::Result<()> {
 
     if scope.is_user() {
         for entry in open_with_list_entries(&root, &ext) {
-            remove_application_binding(&root, &entry, &catid);
+            for (_, catid) in &classes {
+                remove_application_binding(&root, &entry, catid);
+            }
         }
 
         for progid in open_with_progids_entries(&root, &ext) {
-            remove_prog_id_application(&root, &progid, &catid);
+            for (_, catid) in &classes {
+                remove_prog_id_application(&root, &progid, catid);
+            }
         }
 
         if let Some(prog_id) = user_choice_prog_id(&root, &ext) {
             if let Some(app) = prog_id.strip_prefix("Applications\\") {
-                remove_application_binding(&root, app, &catid);
+                for (_, catid) in &classes {
+                    remove_application_binding(&root, app, catid);
+                }
             } else {
-                remove_prog_id_application(&root, &prog_id, &catid);
+                for (_, catid) in &classes {
+                    remove_prog_id_application(&root, &prog_id, catid);
+                }
             }
         }
     }
@@ -986,14 +1105,21 @@ fn unregister_com_scope(scope: RegistryScope) -> io::Result<()> {
         "Unregister COM [{}]: removing CLSID keys",
         scope_name
     ));
-    let _ = root.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
+    for (clsid, _) in &classes {
+        let _ = root.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
+    }
     let _ = root.delete_subkey_all(format!(r"Software\Classes\{}", DEFAULT_PROGID));
     let _ = root
         .open_subkey_with_flags(
             r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
             KEY_SET_VALUE,
         )
-        .and_then(|k| k.delete_value(clsid));
+        .and_then(|k| {
+            for (clsid, _) in &classes {
+                let _ = k.delete_value(clsid);
+            }
+            Ok(k)
+        });
     log_cli(format!("Unregister COM [{}]: completed", scope_name));
     Ok(())
 }
@@ -1010,6 +1136,16 @@ struct StatusReport {
     inproc_path_exists: bool,
     ext_default_value: Option<String>,
     ext_default_matches: bool,
+    ok_preview_clsid: bool,
+    ok_preview_inproc: bool,
+    ok_preview_bind_prog: bool,
+    ok_preview_bind_ext: bool,
+    ok_preview_bind_sys: bool,
+    ok_preview_handler: bool,
+    preview_disable_process_isolation: bool,
+    preview_inproc_server_path: Option<String>,
+    preview_inproc_path_exists: bool,
+    preview_handler_value: Option<String>,
     machine_ok_clsid: bool,
     machine_ok_inproc: bool,
     machine_disable_process_isolation: bool,
@@ -1021,10 +1157,24 @@ struct StatusReport {
     machine_ok_bind_ext: bool,
     machine_ok_bind_sys: bool,
     machine_ok_thumb_handler: bool,
+    machine_ok_preview_clsid: bool,
+    machine_ok_preview_inproc: bool,
+    machine_ok_preview_bind_prog: bool,
+    machine_ok_preview_bind_ext: bool,
+    machine_ok_preview_bind_sys: bool,
+    machine_ok_preview_handler: bool,
+    machine_preview_disable_process_isolation: bool,
+    machine_preview_inproc_server_path: Option<String>,
+    machine_preview_inproc_path_exists: bool,
+    machine_preview_handler_value: Option<String>,
     hkcr_binding: Option<String>,
     hkcr_binding_matches: bool,
+    hkcr_preview_binding: Option<String>,
+    hkcr_preview_binding_matches: bool,
     hklm_bind_prog: bool,
     hklm_bind_ext: bool,
+    hklm_preview_bind_prog: bool,
+    hklm_preview_bind_ext: bool,
     cached_entries: Vec<(String, Option<u32>)>,
     icons_only_value: Option<u32>,
     icons_only_ok: bool,
@@ -1057,13 +1207,15 @@ impl StatusReport {
 
 fn probe_status() -> io::Result<StatusReport> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let clsid = clsid_str();
-    let catid = shell_thumb_handler_catid_str();
+    let thumb_clsid = clsid_str();
+    let thumb_catid = shell_thumb_handler_catid_str();
+    let preview_clsid = preview_clsid_str();
+    let preview_catid = shell_preview_handler_catid_str();
     let ext = normalize_ext(DEFAULT_EXT);
     let progid_opt = current_progid_of_ext(&ext);
 
     let (ok_clsid, disable_process_isolation) =
-        match hkcu.open_subkey(format!(r"Software\Classes\CLSID\{}", clsid)) {
+        match hkcu.open_subkey(format!(r"Software\Classes\CLSID\{}", thumb_clsid)) {
             Ok(key) => {
                 let dpi = key
                     .get_value::<u32, _>("DisableProcessIsolation")
@@ -1073,22 +1225,55 @@ fn probe_status() -> io::Result<StatusReport> {
             }
             Err(_) => (false, false),
         };
-    let (ok_inproc, inproc_server_path, inproc_path_exists) =
-        match hkcu.open_subkey(format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid)) {
+    let (ok_inproc, inproc_server_path, inproc_path_exists) = match hkcu.open_subkey(format!(
+        r"Software\Classes\CLSID\{}\InprocServer32",
+        thumb_clsid
+    )) {
+        Ok(key) => {
+            let path = key
+                .get_value::<String, _>("")
+                .ok()
+                .map(|s| s.trim_matches(char::from(0)).to_string())
+                .filter(|s| !s.is_empty());
+            let exists = path
+                .as_ref()
+                .map(|p| Path::new(p).exists())
+                .unwrap_or(false);
+            (true, path, exists)
+        }
+        Err(_) => (false, None, false),
+    };
+
+    let (ok_preview_clsid, preview_disable_process_isolation) =
+        match hkcu.open_subkey(format!(r"Software\Classes\CLSID\{}", preview_clsid)) {
             Ok(key) => {
-                let path = key
-                    .get_value::<String, _>("")
-                    .ok()
-                    .map(|s| s.trim_matches(char::from(0)).to_string())
-                    .filter(|s| !s.is_empty());
-                let exists = path
-                    .as_ref()
-                    .map(|p| Path::new(p).exists())
-                    .unwrap_or(false);
-                (true, path, exists)
+                let dpi = key
+                    .get_value::<u32, _>("DisableProcessIsolation")
+                    .unwrap_or(0)
+                    == 1;
+                (true, dpi)
             }
-            Err(_) => (false, None, false),
+            Err(_) => (false, false),
         };
+    let (ok_preview_inproc, preview_inproc_server_path, preview_inproc_path_exists) = match hkcu
+        .open_subkey(format!(
+            r"Software\Classes\CLSID\{}\InprocServer32",
+            preview_clsid
+        )) {
+        Ok(key) => {
+            let path = key
+                .get_value::<String, _>("")
+                .ok()
+                .map(|s| s.trim_matches(char::from(0)).to_string())
+                .filter(|s| !s.is_empty());
+            let exists = path
+                .as_ref()
+                .map(|p| Path::new(p).exists())
+                .unwrap_or(false);
+            (true, path, exists)
+        }
+        Err(_) => (false, None, false),
+    };
 
     let (ext_default_value, ext_default_matches) =
         match hkcu.open_subkey(format!(r"Software\Classes\{}", ext)) {
@@ -1132,7 +1317,7 @@ fn probe_status() -> io::Result<StatusReport> {
 
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
     let (hkcr_binding, hkcr_binding_matches) =
-        match hkcr.open_subkey(format!(r"{}\ShellEx\{}", ext, catid)) {
+        match hkcr.open_subkey(format!(r"{}\ShellEx\{}", ext, thumb_catid)) {
             Ok(key) => {
                 let val = key
                     .get_value::<String, _>("")
@@ -1141,7 +1326,24 @@ fn probe_status() -> io::Result<StatusReport> {
                     .filter(|s| !s.is_empty());
                 let matches = val
                     .as_ref()
-                    .map(|s| s.eq_ignore_ascii_case(&clsid))
+                    .map(|s| s.eq_ignore_ascii_case(&thumb_clsid))
+                    .unwrap_or(false);
+                (val, matches)
+            }
+            Err(_) => (None, false),
+        };
+
+    let (hkcr_preview_binding, hkcr_preview_binding_matches) =
+        match hkcr.open_subkey(format!(r"{}\ShellEx\{}", ext, preview_catid)) {
+            Ok(key) => {
+                let val = key
+                    .get_value::<String, _>("")
+                    .ok()
+                    .map(|s| s.trim_matches(char::from(0)).to_string())
+                    .filter(|s| !s.is_empty());
+                let matches = val
+                    .as_ref()
+                    .map(|s| s.eq_ignore_ascii_case(&preview_clsid))
                     .unwrap_or(false);
                 (val, matches)
             }
@@ -1152,12 +1354,18 @@ fn probe_status() -> io::Result<StatusReport> {
     if let Ok(cache_key) =
         hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Cached")
     {
-        let clsid_upper = clsid.to_ascii_uppercase();
+        let clsid_upper = thumb_clsid.to_ascii_uppercase();
         let clsid_nobrace = clsid_upper.trim_matches('{').trim_matches('}').to_string();
+        let preview_upper = preview_clsid.to_ascii_uppercase();
+        let preview_nobrace = preview_upper
+            .trim_matches('{')
+            .trim_matches('}')
+            .to_string();
         for value in cache_key.enum_values().flatten() {
-            let name_upper = value.0.to_ascii_uppercase();
+            let (name, data) = value;
+            let name_upper = name.to_ascii_uppercase();
             if name_upper.contains(&clsid_upper) || name_upper.contains(&clsid_nobrace) {
-                let state = match value.1 {
+                let state = match data {
                     RegValue {
                         vtype: RegType::REG_BINARY,
                         ref bytes,
@@ -1176,33 +1384,90 @@ fn probe_status() -> io::Result<StatusReport> {
                     }
                     _ => None,
                 };
-                cached_entries.push((value.0, state));
+                cached_entries.push((name.clone(), state));
+            }
+            if name_upper.contains(&preview_upper) || name_upper.contains(&preview_nobrace) {
+                let state = match data {
+                    RegValue {
+                        vtype: RegType::REG_BINARY,
+                        ref bytes,
+                    } if bytes.len() >= 4 => {
+                        let mut arr = [0u8; 4];
+                        arr.copy_from_slice(&bytes[..4]);
+                        Some(u32::from_le_bytes(arr))
+                    }
+                    RegValue {
+                        vtype: RegType::REG_DWORD,
+                        ref bytes,
+                    } if bytes.len() >= 4 => {
+                        let mut arr = [0u8; 4];
+                        arr.copy_from_slice(&bytes[..4]);
+                        Some(u32::from_le_bytes(arr))
+                    }
+                    _ => None,
+                };
+                cached_entries.push((name.clone(), state));
             }
         }
     }
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let machine_ok_clsid = hklm
-        .open_subkey(format!(r"Software\Classes\CLSID\{}", clsid))
+        .open_subkey(format!(r"Software\Classes\CLSID\{}", thumb_clsid))
         .is_ok();
-    let (machine_ok_inproc, machine_inproc_server_path, machine_inproc_path_exists) =
-        match hklm.open_subkey(format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid)) {
-            Ok(key) => {
-                let path = key
-                    .get_value::<String, _>("")
-                    .ok()
-                    .map(|s| s.trim_matches(char::from(0)).to_string())
-                    .filter(|s| !s.is_empty());
-                let exists = path
-                    .as_ref()
-                    .map(|p| Path::new(p).exists())
-                    .unwrap_or(false);
-                (true, path, exists)
-            }
-            Err(_) => (false, None, false),
-        };
+    let (machine_ok_inproc, machine_inproc_server_path, machine_inproc_path_exists) = match hklm
+        .open_subkey(format!(
+            r"Software\Classes\CLSID\{}\InprocServer32",
+            thumb_clsid
+        )) {
+        Ok(key) => {
+            let path = key
+                .get_value::<String, _>("")
+                .ok()
+                .map(|s| s.trim_matches(char::from(0)).to_string())
+                .filter(|s| !s.is_empty());
+            let exists = path
+                .as_ref()
+                .map(|p| Path::new(p).exists())
+                .unwrap_or(false);
+            (true, path, exists)
+        }
+        Err(_) => (false, None, false),
+    };
     let machine_disable_process_isolation = hklm
-        .open_subkey(format!(r"Software\Classes\CLSID\{}", clsid))
+        .open_subkey(format!(r"Software\Classes\CLSID\{}", thumb_clsid))
+        .ok()
+        .and_then(|key| key.get_value::<u32, _>("DisableProcessIsolation").ok())
+        .map(|v| v == 1)
+        .unwrap_or(false);
+
+    let machine_ok_preview_clsid = hklm
+        .open_subkey(format!(r"Software\Classes\CLSID\{}", preview_clsid))
+        .is_ok();
+    let (
+        machine_ok_preview_inproc,
+        machine_preview_inproc_server_path,
+        machine_preview_inproc_path_exists,
+    ) = match hklm.open_subkey(format!(
+        r"Software\Classes\CLSID\{}\InprocServer32",
+        preview_clsid
+    )) {
+        Ok(key) => {
+            let path = key
+                .get_value::<String, _>("")
+                .ok()
+                .map(|s| s.trim_matches(char::from(0)).to_string())
+                .filter(|s| !s.is_empty());
+            let exists = path
+                .as_ref()
+                .map(|p| Path::new(p).exists())
+                .unwrap_or(false);
+            (true, path, exists)
+        }
+        Err(_) => (false, None, false),
+    };
+    let machine_preview_disable_process_isolation = hklm
+        .open_subkey(format!(r"Software\Classes\CLSID\{}", preview_clsid))
         .ok()
         .and_then(|key| key.get_value::<u32, _>("DisableProcessIsolation").ok())
         .map(|v| v == 1)
@@ -1222,26 +1487,61 @@ fn probe_status() -> io::Result<StatusReport> {
     let machine_ok_bind_prog = hklm
         .open_subkey(format!(
             r"Software\Classes\{}\ShellEx\{}",
-            DEFAULT_PROGID, catid
+            DEFAULT_PROGID, thumb_catid
         ))
         .is_ok();
     let machine_ok_bind_ext = hklm
-        .open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid))
+        .open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", ext, thumb_catid))
         .is_ok();
     let machine_ok_bind_sys = hklm
         .open_subkey(format!(
             r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
-            ext, catid
+            ext, thumb_catid
+        ))
+        .is_ok();
+    let machine_ok_preview_bind_prog = hklm
+        .open_subkey(format!(
+            r"Software\Classes\{}\ShellEx\{}",
+            DEFAULT_PROGID, preview_catid
+        ))
+        .is_ok();
+    let machine_ok_preview_bind_ext = hklm
+        .open_subkey(format!(
+            r"Software\Classes\{}\ShellEx\{}",
+            ext, preview_catid
+        ))
+        .is_ok();
+    let machine_ok_preview_bind_sys = hklm
+        .open_subkey(format!(
+            r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
+            ext, preview_catid
         ))
         .is_ok();
     let machine_ok_thumb_handler = hklm
         .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers")
         .ok()
         .and_then(|key| key.get_value::<String, _>(&ext).ok())
-        .map(|val| val.trim_matches(char::from(0)) == clsid)
+        .map(|val| val.trim_matches(char::from(0)) == thumb_clsid)
         .unwrap_or(false);
+    let (machine_preview_handler_value, machine_ok_preview_handler) =
+        match hklm.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers") {
+            Ok(key) => {
+                let val = key
+                    .get_value::<String, _>(&preview_clsid)
+                    .ok()
+                    .map(|s| s.trim_matches(char::from(0)).to_string());
+                let matches = val
+                    .as_ref()
+                    .map(|s| s == PREVIEW_FRIENDLY_NAME)
+                    .unwrap_or(false);
+                (val, matches)
+            }
+            Err(_) => (None, false),
+        };
     let hklm_bind_prog = machine_ok_bind_prog;
     let hklm_bind_ext = machine_ok_bind_ext;
+    let hklm_preview_bind_prog = machine_ok_preview_bind_prog;
+    let hklm_preview_bind_ext = machine_ok_preview_bind_ext;
 
     let mut policy_values = Vec::new();
     let mut policy_ok = true;
@@ -1270,20 +1570,44 @@ fn probe_status() -> io::Result<StatusReport> {
     }
 
     let ok_prog = if let Some(pid) = &progid_opt {
-        hkcu.open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", pid, catid))
+        hkcu.open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", pid, thumb_catid))
             .is_ok()
     } else {
         false
     };
 
     let ok_ext = hkcu
-        .open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid))
+        .open_subkey(format!(r"Software\Classes\{}\ShellEx\{}", ext, thumb_catid))
         .is_ok();
 
     let ok_sys = hkcu
         .open_subkey(format!(
             r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
-            ext, catid
+            ext, thumb_catid
+        ))
+        .is_ok();
+
+    let ok_preview_bind_prog = if let Some(pid) = &progid_opt {
+        hkcu.open_subkey(format!(
+            r"Software\Classes\{}\ShellEx\{}",
+            pid, preview_catid
+        ))
+        .is_ok()
+    } else {
+        false
+    };
+
+    let ok_preview_bind_ext = hkcu
+        .open_subkey(format!(
+            r"Software\Classes\{}\ShellEx\{}",
+            ext, preview_catid
+        ))
+        .is_ok();
+
+    let ok_preview_bind_sys = hkcu
+        .open_subkey(format!(
+            r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
+            ext, preview_catid
         ))
         .is_ok();
 
@@ -1291,7 +1615,7 @@ fn probe_status() -> io::Result<StatusReport> {
     let mut apps_list_details = Vec::new();
     let mut ok_apps_list_matched = 0;
     for entry in list_entries {
-        let bound = check_application_binding(&hkcu, &entry, &catid);
+        let bound = check_application_binding(&hkcu, &entry, &thumb_catid);
         if bound {
             ok_apps_list_matched += 1;
         }
@@ -1302,7 +1626,7 @@ fn probe_status() -> io::Result<StatusReport> {
     let mut apps_progids_details = Vec::new();
     let mut ok_apps_progids_matched = 0;
     for entry in progid_entries {
-        let bound = check_prog_id_application(&hkcu, &entry, &catid);
+        let bound = check_prog_id_application(&hkcu, &entry, &thumb_catid);
         if bound {
             ok_apps_progids_matched += 1;
         }
@@ -1311,10 +1635,10 @@ fn probe_status() -> io::Result<StatusReport> {
 
     let user_choice_detail = user_choice_prog_id(&hkcu, &ext).map(|prog_id| {
         if let Some(app) = prog_id.strip_prefix("Applications\\") {
-            let bound = check_application_binding(&hkcu, app, &catid);
+            let bound = check_application_binding(&hkcu, app, &thumb_catid);
             (prog_id, bound)
         } else {
-            let bound = check_prog_id_application(&hkcu, &prog_id, &catid);
+            let bound = check_prog_id_application(&hkcu, &prog_id, &thumb_catid);
             (prog_id, bound)
         }
     });
@@ -1328,20 +1652,38 @@ fn probe_status() -> io::Result<StatusReport> {
     if !ok_clsid {
         alerts.push("CLSID key missing".to_string());
     }
+    if !ok_preview_clsid {
+        alerts.push("Preview CLSID key missing".to_string());
+    }
     if !ok_inproc {
         alerts.push("InprocServer32 missing".to_string());
+    }
+    if !ok_preview_inproc {
+        alerts.push("Preview InprocServer32 missing".to_string());
     }
     if !ok_prog {
         alerts.push("ProgID ShellEx binding missing".to_string());
     }
+    if !ok_preview_bind_prog {
+        alerts.push("Preview ProgID ShellEx binding missing".to_string());
+    }
     if !ok_ext {
         alerts.push("Extension ShellEx binding missing".to_string());
+    }
+    if !ok_preview_bind_ext {
+        alerts.push("Preview extension ShellEx binding missing".to_string());
     }
     if !ok_sys {
         alerts.push("SystemFileAssociations ShellEx binding missing".to_string());
     }
+    if !ok_preview_bind_sys {
+        alerts.push("Preview SystemFileAssociations ShellEx binding missing".to_string());
+    }
     if !disable_process_isolation {
         alerts.push("DisableProcessIsolation not set to 1".to_string());
+    }
+    if !preview_disable_process_isolation {
+        alerts.push("Preview DisableProcessIsolation not set to 1".to_string());
     }
     if !ext_default_matches {
         alerts.push(match &ext_default_value {
@@ -1356,20 +1698,54 @@ fn probe_status() -> io::Result<StatusReport> {
             alerts.push("InprocServer32 target DLL not found".to_string());
         }
     }
+    if ok_preview_inproc && !preview_inproc_path_exists {
+        if let Some(path) = &preview_inproc_server_path {
+            alerts.push(format!(
+                "Preview InprocServer32 target DLL not found: {}",
+                path
+            ));
+        } else {
+            alerts.push("Preview InprocServer32 target DLL not found".to_string());
+        }
+    }
 
     let ok_thumb_handler = hkcu
         .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers")
         .ok()
         .and_then(|key| key.get_value::<String, _>(&ext).ok())
-        .map(|val| val.trim_matches(char::from(0)) == clsid)
+        .map(|val| val.trim_matches(char::from(0)) == thumb_clsid)
         .unwrap_or(false);
+    let (preview_handler_value, ok_preview_handler) =
+        match hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers") {
+            Ok(key) => {
+                let val = key
+                    .get_value::<String, _>(&preview_clsid)
+                    .ok()
+                    .map(|s| s.trim_matches(char::from(0)).to_string());
+                let matches = val
+                    .as_ref()
+                    .map(|s| s == PREVIEW_FRIENDLY_NAME)
+                    .unwrap_or(false);
+                (val, matches)
+            }
+            Err(_) => (None, false),
+        };
     if !ok_thumb_handler {
         alerts.push("Explorer ThumbnailHandlers mapping missing".to_string());
+    }
+    if !ok_preview_handler {
+        alerts.push("PreviewHandlers mapping missing".to_string());
     }
     if !hkcr_binding_matches {
         alerts.push(match &hkcr_binding {
             Some(val) => format!("HKCR binding points to {}", val),
             None => "HKCR binding missing".to_string(),
+        });
+    }
+    if !hkcr_preview_binding_matches {
+        alerts.push(match &hkcr_preview_binding {
+            Some(val) => format!("HKCR preview binding points to {}", val),
+            None => "HKCR preview binding missing".to_string(),
         });
     }
     if !cached_entries.is_empty() {
@@ -1402,11 +1778,20 @@ fn probe_status() -> io::Result<StatusReport> {
     if !machine_ok_clsid {
         alerts.push("HKLM CLSID key missing".to_string());
     }
+    if !machine_ok_preview_clsid {
+        alerts.push("HKLM preview CLSID key missing".to_string());
+    }
     if !machine_ok_inproc {
         alerts.push("HKLM InprocServer32 missing".to_string());
     }
+    if !machine_ok_preview_inproc {
+        alerts.push("HKLM preview InprocServer32 missing".to_string());
+    }
     if !machine_disable_process_isolation {
         alerts.push("HKLM DisableProcessIsolation not set to 1".to_string());
+    }
+    if !machine_preview_disable_process_isolation {
+        alerts.push("HKLM preview DisableProcessIsolation not set to 1".to_string());
     }
     if !machine_ext_default_matches {
         alerts.push(match &machine_ext_default_value {
@@ -1424,23 +1809,46 @@ fn probe_status() -> io::Result<StatusReport> {
             alerts.push("HKLM InprocServer32 target DLL not found".to_string());
         }
     }
+    if machine_ok_preview_inproc && !machine_preview_inproc_path_exists {
+        if let Some(path) = &machine_preview_inproc_server_path {
+            alerts.push(format!(
+                "HKLM preview InprocServer32 target DLL not found: {}",
+                path
+            ));
+        } else {
+            alerts.push("HKLM preview InprocServer32 target DLL not found".to_string());
+        }
+    }
     if !machine_ok_bind_prog {
         alerts.push("HKLM ProgID ShellEx binding missing".to_string());
+    }
+    if !machine_ok_preview_bind_prog {
+        alerts.push("HKLM preview ProgID ShellEx binding missing".to_string());
     }
     if !machine_ok_bind_ext {
         alerts.push("HKLM extension ShellEx binding missing".to_string());
     }
+    if !machine_ok_preview_bind_ext {
+        alerts.push("HKLM preview extension ShellEx binding missing".to_string());
+    }
     if !machine_ok_bind_sys {
         alerts.push("HKLM SystemFileAssociations ShellEx binding missing".to_string());
     }
+    if !machine_ok_preview_bind_sys {
+        alerts.push("HKLM preview SystemFileAssociations ShellEx binding missing".to_string());
+    }
     if !machine_ok_thumb_handler {
         alerts.push("HKLM Explorer ThumbnailHandlers mapping missing".to_string());
+    }
+    if !machine_ok_preview_handler {
+        alerts.push("HKLM PreviewHandlers mapping missing".to_string());
     }
     if !policy_ok {
         alerts.push("Explorer policies disable thumbnails".to_string());
     }
 
-    let mut com_create_status = "FAIL";
+    let mut thumb_create_ok = false;
+    let mut preview_create_ok = false;
     let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     if hr == S_OK || hr == S_FALSE {
         unsafe {
@@ -1450,11 +1858,24 @@ fn probe_status() -> io::Result<StatusReport> {
                 CLSCTX_INPROC_SERVER,
             ) {
                 Ok(_) => {
-                    com_create_status = "OK";
+                    thumb_create_ok = true;
                 }
                 Err(err) => {
                     alerts.push(format!("CoCreateInstance failed: {err:?}"));
                     log_cli(format!("Status: CoCreateInstance failed: {err:?}"));
+                }
+            }
+            match CoCreateInstance::<Option<&IUnknown>, IUnknown>(
+                &CLSID_BLP_PREVIEW,
+                None,
+                CLSCTX_INPROC_SERVER,
+            ) {
+                Ok(_) => {
+                    preview_create_ok = true;
+                }
+                Err(err) => {
+                    alerts.push(format!("CoCreateInstance preview failed: {err:?}"));
+                    log_cli(format!("Status: CoCreateInstance preview failed: {err:?}"));
                 }
             }
             CoUninitialize();
@@ -1463,6 +1884,13 @@ fn probe_status() -> io::Result<StatusReport> {
         alerts.push(format!("CoInitializeEx failed: {hr:?}"));
         log_cli(format!("Status: CoInitializeEx failed: {:?}", hr));
     }
+
+    let com_create_status = match (thumb_create_ok, preview_create_ok) {
+        (true, true) => "OK",
+        (true, false) => "Thumb OK",
+        (false, true) => "Preview OK",
+        _ => "FAIL",
+    };
 
     let thumbnail_settings_ok = icons_only_ok
         && disable_thumbnails_ok
@@ -1482,6 +1910,16 @@ fn probe_status() -> io::Result<StatusReport> {
         inproc_path_exists,
         ext_default_value,
         ext_default_matches,
+        ok_preview_clsid,
+        ok_preview_inproc,
+        ok_preview_bind_prog,
+        ok_preview_bind_ext,
+        ok_preview_bind_sys,
+        ok_preview_handler,
+        preview_disable_process_isolation,
+        preview_inproc_server_path,
+        preview_inproc_path_exists,
+        preview_handler_value,
         machine_ok_clsid,
         machine_ok_inproc,
         machine_disable_process_isolation,
@@ -1493,10 +1931,24 @@ fn probe_status() -> io::Result<StatusReport> {
         machine_ok_bind_ext,
         machine_ok_bind_sys,
         machine_ok_thumb_handler,
+        machine_ok_preview_clsid,
+        machine_ok_preview_inproc,
+        machine_ok_preview_bind_prog,
+        machine_ok_preview_bind_ext,
+        machine_ok_preview_bind_sys,
+        machine_ok_preview_handler,
+        machine_preview_disable_process_isolation,
+        machine_preview_inproc_server_path,
+        machine_preview_inproc_path_exists,
+        machine_preview_handler_value,
         hkcr_binding,
         hkcr_binding_matches,
+        hkcr_preview_binding,
+        hkcr_preview_binding_matches,
         hklm_bind_prog,
         hklm_bind_ext,
+        hklm_preview_bind_prog,
+        hklm_preview_bind_ext,
         cached_entries,
         icons_only_value,
         icons_only_ok,

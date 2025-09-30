@@ -181,27 +181,6 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
 
         let _ = log_desktop(format!("GetThumbnail: start (cx={})", cx));
 
-        // ---- GREEN SQUARE SHORT-CIRCUIT ----
-        if option_env!("NEVER").is_none() {
-            let side = if cx > 0 { cx } else { 256 };
-            let mut bgra = vec![0u8; (side as usize) * (side as usize) * 4];
-            for px in bgra.chunks_exact_mut(4) {
-                // BGRA (premultiplied), opaque green
-                px[0] = 0; // B
-                px[1] = 255; // G
-                px[2] = 0; // R
-                px[3] = 255; // A (opaque)
-            }
-            let hbmp = unsafe { create_hbitmap_bgra_premul(side as i32, side as i32, &bgra)? };
-            unsafe {
-                *phbmp = hbmp;
-                *pdwalpha = WTSAT_ARGB;
-            }
-            let _ = log_desktop("GetThumbnail: returned diagnostic green square");
-            return Ok(());
-        }
-        // ------------------------------------
-
         // источник: либо кэшированные данные из потока, либо путь на диске
         let (data_arc, path_opt) = {
             let st = self.state.lock().unwrap();

@@ -1,5 +1,6 @@
 mod class_factory;
 pub mod keys;
+mod preview_handler;
 mod thumbnail_provider;
 
 #[cfg(not(target_pointer_width = "64"))]
@@ -14,7 +15,7 @@ use std::ptr::null_mut;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::keys::CLSID_BLP_THUMB;
+use crate::keys::{CLSID_BLP_PREVIEW, CLSID_BLP_THUMB};
 use blp::core::image::{ImageBlp, MAX_MIPS};
 
 use once_cell::sync::Lazy;
@@ -26,7 +27,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::Com::IClassFactory;
 
-use crate::class_factory::BlpClassFactory;
+use crate::class_factory::{BlpClassFactory, ProviderKind};
 use windows::core::{GUID, HRESULT, IUnknown, Interface};
 
 const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x80040111u32 as i32);
@@ -224,11 +225,19 @@ pub extern "system" fn DllGetClassObject(
         }
         *ppv = null_mut();
 
-        if rclsid.is_null() || *rclsid != CLSID_BLP_THUMB {
-            return CLASS_E_CLASSNOTAVAILABLE;
+        if rclsid.is_null() {
+            return E_POINTER;
         }
 
-        let cf: IClassFactory = BlpClassFactory.into();
+        let factory = if *rclsid == CLSID_BLP_THUMB {
+            BlpClassFactory::new(ProviderKind::Thumbnail)
+        } else if *rclsid == CLSID_BLP_PREVIEW {
+            BlpClassFactory::new(ProviderKind::Preview)
+        } else {
+            return CLASS_E_CLASSNOTAVAILABLE;
+        };
+
+        let cf: IClassFactory = factory.into();
 
         if riid.is_null() {
             return E_POINTER;

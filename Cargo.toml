@@ -14,16 +14,7 @@ Includes a separate CLI installer tool for easy registration/unregistration.
 """
 
 [dependencies]
-windows = { version = "0.62.1", features = [
-
-    "Win32_Foundation",
-    "Win32_System_Com", # IClassFactory
-    "Win32_Storage_FileSystem",
-    "Win32_Graphics_Gdi", # LCS_sRGB и BITMAPV5HEADER
-    "Win32_UI_Shell", # IThumbnailProvider, IInitializeWithFile
-    "Win32_UI_Shell_Common",
-    "Win32_UI_Shell_PropertiesSystem",
-] }
+windows = { version = "0.62.1", features = ["Win32_Foundation", "Win32_System_Com", "Win32_Storage_FileSystem", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader"] }
 windows-core = "0.62.1"
 windows-implement = "0.60.1"
 once_cell = "1"

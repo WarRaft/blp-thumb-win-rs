@@ -8,8 +8,17 @@ use windows::core::GUID;
 /// - HKCR\<.ext | ProgID>\ShellEx\{SHELL_THUMB_HANDLER_CATID} = {CLSID}
 pub const SHELL_THUMB_HANDLER_CATID: GUID = GUID::from_u128(0xE357FCCD_A995_4576_B01F_234630154E96);
 
+/// Shell Preview Handler category.
+/// - HKCR\\CLSID\\{CLSID}\\Implemented Categories\\{SHELL_PREVIEW_HANDLER_CATID}
+/// - HKCR\\<.ext | ProgID>\\ShellEx\\{SHELL_PREVIEW_HANDLER_CATID} = {CLSID}
+pub const SHELL_PREVIEW_HANDLER_CATID: GUID =
+    GUID::from_u128(0x8895B1C6_B41F_4C1C_A562_0D564250836F);
+
 /// CLSID of this provider. Must match DLL exports and registry bindings.
 pub const CLSID_BLP_THUMB: GUID = GUID::from_u128(0xB2E9A1F3_7C5D_4E2B_96A1_2C3D4E5F6A7B);
+
+/// CLSID of the preview handler.
+pub const CLSID_BLP_PREVIEW: GUID = GUID::from_u128(0x8FC2C3AB_5B0B_4DB0_BC2E_9D6DBFBB8EAA);
 
 /// ProgID bound to `.blp` (HKCR\WarRaft.BLP; HKCR\.blp -> WarRaft.BLP).
 pub const DEFAULT_PROGID: &str = "WarRaft.BLP";
@@ -19,6 +28,9 @@ pub const DEFAULT_EXT: &str = ".blp";
 
 /// Human-friendly provider name (HKCR\CLSID\{CLSID}\(Default)).
 pub const FRIENDLY_NAME: &str = "BLP Thumbnail Provider";
+
+/// Human-friendly preview handler name.
+pub const PREVIEW_FRIENDLY_NAME: &str = "BLP Preview Handler";
 
 /// ----- Helpers (format GUIDs for registry values) -----
 
@@ -47,8 +59,20 @@ pub fn clsid_str() -> String {
     guid_braced_upper(&CLSID_BLP_THUMB)
 }
 
+/// `{CLSID_BLP_PREVIEW}` as a braced uppercase string.
+#[inline]
+pub fn preview_clsid_str() -> String {
+    guid_braced_upper(&CLSID_BLP_PREVIEW)
+}
+
 /// `{SHELL_THUMB_HANDLER_CATID}` as a braced uppercase string.
 #[inline]
 pub fn shell_thumb_handler_catid_str() -> String {
     guid_braced_upper(&SHELL_THUMB_HANDLER_CATID)
+}
+
+/// `{SHELL_PREVIEW_HANDLER_CATID}` as a braced uppercase string.
+#[inline]
+pub fn shell_preview_handler_catid_str() -> String {
+    guid_braced_upper(&SHELL_PREVIEW_HANDLER_CATID)
 }
