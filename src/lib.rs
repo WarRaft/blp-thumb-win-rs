@@ -29,6 +29,10 @@ use windows::Win32::System::Com::IClassFactory;
 
 use crate::class_factory::{BlpClassFactory, ProviderKind};
 use windows::core::{GUID, HRESULT, IUnknown, Interface};
+use winreg::{
+    RegKey,
+    enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
+};
 
 const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x80040111u32 as i32);
 
@@ -41,7 +45,18 @@ struct ProviderState {
     stream_data: Option<Arc<[u8]>>,
 }
 
+pub fn logging_enabled() -> bool {
+    read_logging_flag()
+}
+
+pub fn log_file_path() -> Option<PathBuf> {
+    DESKTOP_LOG_PATH.as_ref().ok().map(|p| p.clone())
+}
+
 pub fn log_desktop(message: impl AsRef<str>) -> Result<(), String> {
+    if !logging_enabled() {
+        return Ok(());
+    }
     use chrono::Local;
 
     let path = DESKTOP_LOG_PATH
@@ -89,6 +104,18 @@ fn desktop_log_path() -> Result<PathBuf, String> {
     }
 
     Err("unable to locate Desktop path via USERPROFILE/HOMEPATH/HOME".to_string())
+}
+
+fn read_logging_flag() -> bool {
+    fn read_from(hive: RegKey) -> Option<bool> {
+        let key = hive.open_subkey(keys::LOG_SETTINGS_SUBKEY).ok()?;
+        let value = key.get_value::<u32, _>(keys::LOGGING_VALUE_NAME).ok()?;
+        Some(value != 0)
+    }
+
+    read_from(RegKey::predef(HKEY_CURRENT_USER))
+        .or_else(|| read_from(RegKey::predef(HKEY_LOCAL_MACHINE)))
+        .unwrap_or(false)
 }
 
 // ---- helpers: decode/resize/convert ----

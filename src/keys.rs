@@ -32,6 +32,12 @@ pub const FRIENDLY_NAME: &str = "BLP Thumbnail Provider";
 /// Human-friendly preview handler name.
 pub const PREVIEW_FRIENDLY_NAME: &str = "BLP Preview Handler";
 
+/// Registry subkey storing misc settings shared between DLL and installer.
+pub const LOG_SETTINGS_SUBKEY: &str = r"Software\blp-thumb-win";
+
+/// Value under [`LOG_SETTINGS_SUBKEY`] toggling verbose logging (REG_DWORD 0/1).
+pub const LOGGING_VALUE_NAME: &str = "LoggingEnabled";
+
 /// ----- Helpers (format GUIDs for registry values) -----
 
 /// Returns `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` (uppercase, with braces).

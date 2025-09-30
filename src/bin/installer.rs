@@ -23,8 +23,8 @@ static DLL_BYTES: &[u8] = include_bytes!(concat!(
 use crate::restart_explorer::restart_explorer;
 use blp_thumb_win::keys::{
     CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME,
-    PREVIEW_FRIENDLY_NAME, clsid_str, preview_clsid_str, shell_preview_handler_catid_str,
-    shell_thumb_handler_catid_str,
+    LOG_SETTINGS_SUBKEY, LOGGING_VALUE_NAME, PREVIEW_FRIENDLY_NAME, clsid_str, preview_clsid_str,
+    shell_preview_handler_catid_str, shell_thumb_handler_catid_str,
 };
 use windows::Win32::Foundation::{S_FALSE, S_OK};
 use windows::Win32::System::Com::{
@@ -46,8 +46,8 @@ pub(crate) fn log_cli(message: impl Into<String>) {
 fn main() -> io::Result<()> {
     log_cli("Installer started");
     loop {
-        let action = choose_action()?;
-        log_cli(format!("Menu selection: {}", action.title()));
+        let (action, label) = choose_action()?;
+        log_cli(format!("Menu selection: {}", label));
 
         if action == Action::Exit {
             log_cli("Installer exiting");
@@ -55,12 +55,9 @@ fn main() -> io::Result<()> {
         }
 
         match execute_action(action) {
-            Ok(()) => log_cli(format!(
-                "Action '{}' completed successfully",
-                action.title()
-            )),
+            Ok(()) => log_cli(format!("Action '{}' completed successfully", label)),
             Err(err) => {
-                log_cli(format!("Action '{}' failed: {}", action.title(), err));
+                log_cli(format!("Action '{}' failed: {}", label, err));
                 return Err(err);
             }
         }
@@ -81,6 +78,7 @@ enum Action {
     RestartExplorer,
     ClearThumbCache,
     ClearAssociations,
+    ToggleLogging,
     Exit,
 }
 
@@ -99,49 +97,50 @@ fn menu_theme() -> ColorfulTheme {
     t
 }
 
-fn choose_action() -> io::Result<Action> {
-    let items = [
-        "Install (all users)",
-        "Uninstall (all users)",
-        "Status",
-        "Fix Explorer settings",
-        "Restart Explorer",
-        "Clear thumbnail cache",
-        "Clear associations",
-        "Exit",
+fn choose_action() -> io::Result<(Action, String)> {
+    let mut actions = vec![
+        Action::Install,
+        Action::Uninstall,
+        Action::Status,
+        Action::FixExplorer,
+        Action::RestartExplorer,
+        Action::ClearThumbCache,
+        Action::ClearAssociations,
     ];
+
+    let mut labels: Vec<String> = vec![
+        "Install (all users)".into(),
+        "Uninstall (all users)".into(),
+        "Status".into(),
+        "Fix Explorer settings".into(),
+        "Restart Explorer".into(),
+        "Clear thumbnail cache".into(),
+        "Clear associations".into(),
+    ];
+
+    let logging_enabled = blp_thumb_win::logging_enabled();
+    actions.push(Action::ToggleLogging);
+    labels.push(
+        if logging_enabled {
+            "Disable log"
+        } else {
+            "Enable log"
+        }
+        .into(),
+    );
+
+    actions.push(Action::Exit);
+    labels.push("Exit".into());
+
+    let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
 
     let idx = Select::with_theme(&menu_theme())
         .with_prompt("BLP Thumbnail Provider installer")
-        .items(&items)
+        .items(&label_refs)
         .default(0)
         .interact_on(&Term::stdout())?;
 
-    Ok(match idx {
-        0 => Action::Install,
-        1 => Action::Uninstall,
-        2 => Action::Status,
-        3 => Action::FixExplorer,
-        4 => Action::RestartExplorer,
-        5 => Action::ClearThumbCache,
-        6 => Action::ClearAssociations,
-        _ => Action::Exit,
-    })
-}
-
-impl Action {
-    fn title(self) -> &'static str {
-        match self {
-            Action::Install => "Install (all users)",
-            Action::Uninstall => "Uninstall (all users)",
-            Action::Status => "Status",
-            Action::FixExplorer => "Fix Explorer settings",
-            Action::RestartExplorer => "Restart Explorer",
-            Action::ClearThumbCache => "Clear thumbnail cache",
-            Action::ClearAssociations => "Clear associations",
-            Action::Exit => "Exit",
-        }
-    }
+    Ok((actions[idx], labels[idx].clone()))
 }
 
 fn execute_action(action: Action) -> io::Result<()> {
@@ -153,6 +152,7 @@ fn execute_action(action: Action) -> io::Result<()> {
         Action::RestartExplorer => restart_explorer(),
         Action::ClearThumbCache => clear_thumb_cache(),
         Action::ClearAssociations => clear_associations(),
+        Action::ToggleLogging => toggle_logging(),
         Action::Exit => Ok(()),
     }
 }
@@ -792,6 +792,38 @@ fn clear_associations() -> io::Result<()> {
 
     log_cli("Clear associations: completed");
     notify_shell_assoc("clear-assoc");
+    Ok(())
+}
+
+fn toggle_logging() -> io::Result<()> {
+    let currently_enabled = blp_thumb_win::logging_enabled();
+    let target = !currently_enabled;
+
+    set_logging_enabled(RegistryScope::CurrentUser, target)?;
+    if let Err(err) = set_logging_enabled(RegistryScope::LocalMachine, target) {
+        log_cli(format!("Logging toggle: HKLM update failed: {}", err));
+    }
+
+    if !target {
+        if let Some(path) = blp_thumb_win::log_file_path() {
+            if path.exists() {
+                match fs::remove_file(&path) {
+                    Ok(()) => log_cli(format!("Removed log file {}", path.display())),
+                    Err(err) => log_cli(format!(
+                        "Failed to remove log file {}: {}",
+                        path.display(),
+                        err
+                    )),
+                }
+            }
+        }
+    }
+
+    log_cli(format!(
+        "Logging {}",
+        if target { "enabled" } else { "disabled" }
+    ));
+    println!("Logging {}.", if target { "enabled" } else { "disabled" });
     Ok(())
 }
 
@@ -1990,6 +2022,13 @@ fn pause(msg: &str) {
     // Use read_line to avoid printing localized messages from external tools
     let mut _buf = String::new();
     let _ = io::stdin().read_line(&mut _buf);
+}
+
+fn set_logging_enabled(scope: RegistryScope, enabled: bool) -> io::Result<()> {
+    let root = scope.root();
+    let (key, _) = root.create_subkey(LOG_SETTINGS_SUBKEY)?;
+    let value: u32 = if enabled { 1 } else { 0 };
+    key.set_value(LOGGING_VALUE_NAME, &value)
 }
 
 fn mark(b: bool) -> &'static str {

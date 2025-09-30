@@ -1,6 +1,6 @@
 use crate::{
-    create_hbitmap_bgra_premul, decode_blp_rgba, log_desktop, rgba_to_bgra_premul, DLL_LOCK_COUNT,
-    ProviderState,
+    DLL_LOCK_COUNT, ProviderState, create_hbitmap_bgra_premul, decode_blp_rgba, log_desktop,
+    rgba_to_bgra_premul,
 };
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -19,7 +19,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::MSG;
 use windows::core::{Error, Interface, Result as WinResult};
-use windows_core::{PCWSTR, PWSTR};
+use windows_core::{BOOL, PCWSTR, PWSTR};
 use windows_implement::implement;
 
 #[derive(Clone)]
@@ -40,7 +40,8 @@ struct PreviewUi {
     windows::Win32::UI::Shell::IPreviewHandler,
     windows::Win32::UI::Shell::IInitializeWithItem,
     windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithStream,
-    windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithFile
+    windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithFile,
+    windows::Win32::System::Ole::IOleWindow
 )]
 pub struct BlpPreviewHandler {
     state: Mutex<ProviderState>,
@@ -96,13 +97,8 @@ impl BlpPreviewHandler {
 
         let width = (rect.right - rect.left).max(1) as u32;
         let height = (rect.bottom - rect.top).max(1) as u32;
-        let (dest_w, dest_h, rgba_fit) = resize_fit_rgba_rect(
-            &image.rgba[..],
-            image.width,
-            image.height,
-            width,
-            height,
-        );
+        let (dest_w, dest_h, rgba_fit) =
+            resize_fit_rgba_rect(&image.rgba[..], image.width, image.height, width, height);
         let bgra = rgba_to_bgra_premul(&rgba_fit);
         let hbmp = unsafe { create_hbitmap_bgra_premul(dest_w as i32, dest_h as i32, &bgra)? };
 
@@ -162,7 +158,6 @@ impl BlpPreviewHandler {
 
         Ok(())
     }
-
 }
 
 impl Drop for BlpPreviewHandler {
@@ -343,6 +338,19 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
 
     #[allow(non_snake_case)]
     fn TranslateAccelerator(&self, _pmsg: *const MSG) -> WinResult<()> {
+        Err(Error::from(S_FALSE))
+    }
+}
+
+impl windows::Win32::System::Ole::IOleWindow_Impl for BlpPreviewHandler_Impl {
+    #[allow(non_snake_case)]
+    fn GetWindow(&self) -> WinResult<HWND> {
+        let ui = self.ui.lock().unwrap();
+        ui.parent.ok_or_else(|| Error::from(E_FAIL))
+    }
+
+    #[allow(non_snake_case)]
+    fn ContextSensitiveHelp(&self, _fentermode: BOOL) -> WinResult<()> {
         Err(Error::from(S_FALSE))
     }
 }
