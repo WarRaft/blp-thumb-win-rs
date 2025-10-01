@@ -474,7 +474,7 @@ fn clear_shell_ext_cache_scope(scope: RegistryScope, clsid: &str) -> io::Result<
     }
     if removed > 0 {
         log_cli(format!(
-            "{}: cleared {} entries from Shell Extensions\\Cached",
+            r"{}: cleared {} entries from Shell Extensions\Cached",
             scope.name(),
             removed
         ));
@@ -547,7 +547,7 @@ fn clear_associations() -> io::Result<()> {
         }
     }
     if let Some(prog_id) = user_choice_prog_id(&hkcu, &ext) {
-        if let Some(app) = prog_id.strip_prefix("Applications\\") {
+        if let Some(app) = prog_id.strip_prefix(r"Applications\") {
             for (_, catid) in &classes {
                 remove_application_binding(&hkcu, app, catid);
             }
@@ -823,7 +823,7 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         }
 
         if let Some(prog_id) = user_choice_prog_id(&root, &ext) {
-            if let Some(app) = prog_id.strip_prefix("Applications\\") {
+            if let Some(app) = prog_id.strip_prefix(r"Applications\") {
                 for (_, clsid, catid) in &classes {
                     bind_application(&root, app, catid, clsid)?;
                 }
@@ -927,7 +927,7 @@ fn unregister_com_scope(scope: RegistryScope) -> io::Result<()> {
         }
 
         if let Some(prog_id) = user_choice_prog_id(&root, &ext) {
-            if let Some(app) = prog_id.strip_prefix("Applications\\") {
+            if let Some(app) = prog_id.strip_prefix(r"Applications\") {
                 for (_, catid) in &classes {
                     remove_application_binding(&root, app, catid);
                 }
@@ -1399,7 +1399,7 @@ fn probe_status() -> io::Result<StatusReport> {
                     if let Ok(value) = key.get_value::<u32, _>(name) {
                         if value != 0 {
                             policy_ok = false;
-                            policy_values.push((format!(r"{}\\{}\\{}", prefix, path, name), value));
+                            policy_values.push((format!(r"{}\{}\{}", prefix, path, name), value));
                         }
                     }
                 }
@@ -1472,7 +1472,7 @@ fn probe_status() -> io::Result<StatusReport> {
     }
 
     let user_choice_detail = user_choice_prog_id(&hkcu, &ext).map(|prog_id| {
-        if let Some(app) = prog_id.strip_prefix("Applications\\") {
+        if let Some(app) = prog_id.strip_prefix(r"Applications\") {
             let bound = check_application_binding(&hkcu, app, &thumb_catid);
             (prog_id, bound)
         } else {
@@ -1834,7 +1834,18 @@ fn set_logging_enabled(scope: RegistryScope, enabled: bool) -> io::Result<()> {
     let root = scope.root();
     let (key, _) = root.create_subkey(LOG_SETTINGS_SUBKEY)?;
     let value: u32 = if enabled { 1 } else { 0 };
-    key.set_value(LOGGING_VALUE_NAME, &value)
+
+    if let Err(err) = key.set_value(LOGGING_VALUE_NAME, &value) {
+        if let Some(5) = err.raw_os_error() {
+            println!(
+                "Ошибка: Отказано в доступе. Пожалуйста, запустите программу с административными правами."
+            );
+            log_cli("Ошибка: Отказано в доступе при изменении HKLM.");
+        }
+        return Err(err);
+    }
+
+    Ok(())
 }
 
 fn mark(b: bool) -> &'static str {
@@ -1925,7 +1936,7 @@ fn check_prog_id_application(hkcu: &RegKey, progid: &str, catid: &str) -> bool {
         return false;
     }
 
-    if let Some(app) = progid.strip_prefix("Applications\\") {
+    if let Some(app) = progid.strip_prefix(r"Applications\") {
         return check_application_binding(hkcu, app, catid);
     }
 
@@ -1966,7 +1977,7 @@ fn bind_prog_id_application(
         return Ok(());
     }
 
-    if let Some(app) = progid.strip_prefix("Applications\\") {
+    if let Some(app) = progid.strip_prefix(r"Applications\") {
         return bind_application(hkcu, app, catid, clsid);
     }
 
@@ -2005,7 +2016,7 @@ fn remove_prog_id_application(hkcu: &RegKey, progid: &str, catid: &str) {
         return;
     }
 
-    if let Some(app) = progid.strip_prefix("Applications\\") {
+    if let Some(app) = progid.strip_prefix(r"Applications\") {
         remove_application_binding(hkcu, app, catid);
         return;
     }
