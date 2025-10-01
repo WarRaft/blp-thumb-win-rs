@@ -36,5 +36,5 @@ crate-type = ["cdylib", "rlib"]
 # CLI binaries (installer, helper)
 # ------------------------------
 [[bin]]
-name = "blp-thumb-installer"
+name = "blp-thumb-win-installer"
 path = "src/bin/installer.rs"

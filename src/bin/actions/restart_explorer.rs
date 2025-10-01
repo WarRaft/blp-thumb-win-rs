@@ -1,9 +1,9 @@
+use crate::log_cli;
+use blp_thumb_win::log::log_ui;
 use std::io;
 use std::process::{Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
-
-use crate::log_cli;
 
 fn count_explorer_processes() -> io::Result<usize> {
     let output = Command::new("tasklist")
@@ -23,12 +23,6 @@ fn count_explorer_processes() -> io::Result<usize> {
         .count();
 
     Ok(count)
-}
-
-fn log_ui(message: impl AsRef<str>) {
-    let msg = message.as_ref();
-    log_cli(msg);
-    println!("{msg}");
 }
 
 pub fn restart_explorer() -> io::Result<()> {

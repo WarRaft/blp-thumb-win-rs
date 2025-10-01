@@ -6,9 +6,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use dialoguer::console::style;
-use dialoguer::theme::ColorfulTheme;
-use dialoguer::{Select, console::Term};
 use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 use winreg::{RegKey, RegValue, enums::*};
 
@@ -20,12 +17,13 @@ static DLL_BYTES: &[u8] = include_bytes!(concat!(
 ));
 
 // Single source of truth from the library (your keys module)
-use crate::restart_explorer::restart_explorer;
+use crate::dialog::{Action, action_choose, action_execute};
 use blp_thumb_win::keys::{
     CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME,
     LOG_SETTINGS_SUBKEY, LOGGING_VALUE_NAME, PREVIEW_FRIENDLY_NAME, clsid_str, preview_clsid_str,
     shell_preview_handler_catid_str, shell_thumb_handler_catid_str,
 };
+use blp_thumb_win::log::{log_cli, log_endabled};
 use windows::Win32::Foundation::{S_FALSE, S_OK};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
@@ -33,20 +31,19 @@ use windows::Win32::System::Com::{
 };
 use windows::core::IUnknown;
 
-#[path = "installer/restart_explorer.rs"]
+#[path = "actions/restart_explorer.rs"]
 mod restart_explorer;
 
-pub(crate) fn log_cli(message: impl Into<String>) {
-    let text = message.into();
-    if let Err(err) = blp_thumb_win::log_desktop(&text) {
-        eprintln!("[log] cannot write '{}': {}", text, err);
-    }
-}
+#[path = "actions/install.rs"]
+mod install;
+
+#[path = "actions/dialog.rs"]
+mod dialog;
 
 fn main() -> io::Result<()> {
     log_cli("Installer started");
     loop {
-        let (action, label) = choose_action()?;
+        let (action, label) = action_choose()?;
         log_cli(format!("Menu selection: {}", label));
 
         if action == Action::Exit {
@@ -54,7 +51,7 @@ fn main() -> io::Result<()> {
             break;
         }
 
-        match execute_action(action) {
+        match action_execute(action) {
             Ok(()) => log_cli(format!("Action '{}' completed successfully", label)),
             Err(err) => {
                 log_cli(format!("Action '{}' failed: {}", label, err));
@@ -65,96 +62,6 @@ fn main() -> io::Result<()> {
         pause("\nPress Enter to return to the menu...");
     }
     Ok(())
-}
-
-/* ---------- Menu ---------- */
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Action {
-    Install,
-    Uninstall,
-    Status,
-    FixExplorer,
-    RestartExplorer,
-    ClearThumbCache,
-    ClearAssociations,
-    ToggleLogging,
-    Exit,
-}
-
-fn menu_theme() -> ColorfulTheme {
-    // Force ASCII arrow; allow override via env MENU_ARROW if you ever need it.
-    let mut t = ColorfulTheme::default();
-    t.active_item_prefix = style(">".to_string());
-    t.inactive_item_prefix = style(" ".to_string());
-    t.picked_item_prefix = style(">".to_string());
-    t.unpicked_item_prefix = style(" ".to_string());
-
-    t.prompt_prefix = style("$".to_string());
-
-    t.success_prefix = style(">".to_string());
-    t.error_prefix = style("!".to_string());
-    t
-}
-
-fn choose_action() -> io::Result<(Action, String)> {
-    let mut actions = vec![
-        Action::Install,
-        Action::Uninstall,
-        Action::Status,
-        Action::FixExplorer,
-        Action::RestartExplorer,
-        Action::ClearThumbCache,
-        Action::ClearAssociations,
-    ];
-
-    let mut labels: Vec<String> = vec![
-        "Install (all users)".into(),
-        "Uninstall (all users)".into(),
-        "Status".into(),
-        "Fix Explorer settings".into(),
-        "Restart Explorer".into(),
-        "Clear thumbnail cache".into(),
-        "Clear associations".into(),
-    ];
-
-    let logging_enabled = blp_thumb_win::logging_enabled();
-    actions.push(Action::ToggleLogging);
-    labels.push(
-        if logging_enabled {
-            "Disable log"
-        } else {
-            "Enable log"
-        }
-        .into(),
-    );
-
-    actions.push(Action::Exit);
-    labels.push("Exit".into());
-
-    let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
-
-    let idx = Select::with_theme(&menu_theme())
-        .with_prompt("BLP Thumbnail Provider installer")
-        .items(&label_refs)
-        .default(0)
-        .interact_on(&Term::stdout())?;
-
-    Ok((actions[idx], labels[idx].clone()))
-}
-
-fn execute_action(action: Action) -> io::Result<()> {
-    match action {
-        Action::Install => install(),
-        Action::Uninstall => uninstall(),
-        Action::Status => status(),
-        Action::FixExplorer => fix_explorer(),
-        Action::RestartExplorer => restart_explorer(),
-        Action::ClearThumbCache => clear_thumb_cache(),
-        Action::ClearAssociations => clear_associations(),
-        Action::ToggleLogging => toggle_logging(),
-        Action::Exit => Ok(()),
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,73 +91,6 @@ impl RegistryScope {
 }
 
 /* ---------- Actions ---------- */
-
-fn install() -> io::Result<()> {
-    log_cli("Install (all users): start");
-    let dll_path = materialize_embedded_dll_machine()?;
-    log_cli(format!(
-        "Install (all users): DLL materialized to {}",
-        dll_path.display()
-    ));
-    let mut warnings = Vec::new();
-    if let Err(err) = register_com_scope(RegistryScope::LocalMachine, &dll_path) {
-        warnings.push(format!("HKLM registration failed: {}", err));
-    }
-    if let Err(err) = register_com_scope(RegistryScope::CurrentUser, &dll_path) {
-        warnings.push(format!("HKCU registration failed: {}", err));
-    }
-    if warnings.is_empty() {
-        log_cli("Install (all users): registry entries written");
-    } else {
-        for warn in &warnings {
-            log_cli(format!("Install warning: {}", warn));
-        }
-    }
-
-    let thumb_clsid = clsid_str();
-    let preview_clsid = preview_clsid_str();
-    for scope in [RegistryScope::LocalMachine, RegistryScope::CurrentUser] {
-        for clsid in [&thumb_clsid, &preview_clsid] {
-            if let Err(err) = clear_shell_ext_cache_scope(scope, clsid) {
-                warnings.push(format!("{} cache clear failed: {}", scope.name(), err));
-            }
-        }
-        if let Err(err) = enforce_thumbnail_settings_scope(scope) {
-            warnings.push(format!(
-                "{} thumbnail settings failed: {}",
-                scope.name(),
-                err
-            ));
-        }
-    }
-
-    notify_shell_assoc("install-all");
-
-    match probe_status() {
-        Ok(report) => {
-            if !report.is_ready() {
-                for alert in &report.alerts {
-                    log_cli(format!("Install verify alert: {}", alert));
-                }
-                warnings.push("Verification reported issues; see Status".to_string());
-            }
-        }
-        Err(err) => {
-            warnings.push(format!("Verification failed: {}", err));
-            log_cli(format!("Install: probe_status failed: {}", err));
-        }
-    }
-
-    if warnings.is_empty() {
-        println!("Installed in HKLM and HKCU. Use 'Restart Explorer' to refresh thumbnails.");
-    } else {
-        println!("Install completed with warnings:");
-        for warn in warnings {
-            println!("  - {}", warn);
-        }
-    }
-    Ok(())
-}
 
 fn uninstall() -> io::Result<()> {
     log_cli("Uninstall (all users): start");
@@ -774,7 +614,7 @@ fn clear_associations() -> io::Result<()> {
     ) {
         let _ = preview_handlers.delete_value(&preview_clsid);
     }
-    let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\WarRaft.BLP"));
+    let _ = hkcu.delete_subkey_all(r"Software\Classes\WarRaft.BLP".to_string());
     for (clsid, _) in &classes {
         let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
     }
@@ -796,7 +636,7 @@ fn clear_associations() -> io::Result<()> {
 }
 
 fn toggle_logging() -> io::Result<()> {
-    let currently_enabled = blp_thumb_win::logging_enabled();
+    let currently_enabled = log_endabled();
     let target = !currently_enabled;
 
     set_logging_enabled(RegistryScope::CurrentUser, target)?;
@@ -1399,7 +1239,7 @@ fn probe_status() -> io::Result<StatusReport> {
             if name_upper.contains(&clsid_upper) || name_upper.contains(&clsid_nobrace) {
                 let state = match data {
                     RegValue {
-                        vtype: RegType::REG_BINARY,
+                        vtype: REG_BINARY,
                         ref bytes,
                     } if bytes.len() >= 4 => {
                         let mut arr = [0u8; 4];
@@ -1407,7 +1247,7 @@ fn probe_status() -> io::Result<StatusReport> {
                         Some(u32::from_le_bytes(arr))
                     }
                     RegValue {
-                        vtype: RegType::REG_DWORD,
+                        vtype: REG_DWORD,
                         ref bytes,
                     } if bytes.len() >= 4 => {
                         let mut arr = [0u8; 4];
@@ -1421,7 +1261,7 @@ fn probe_status() -> io::Result<StatusReport> {
             if name_upper.contains(&preview_upper) || name_upper.contains(&preview_nobrace) {
                 let state = match data {
                     RegValue {
-                        vtype: RegType::REG_BINARY,
+                        vtype: REG_BINARY,
                         ref bytes,
                     } if bytes.len() >= 4 => {
                         let mut arr = [0u8; 4];
@@ -1429,7 +1269,7 @@ fn probe_status() -> io::Result<StatusReport> {
                         Some(u32::from_le_bytes(arr))
                     }
                     RegValue {
-                        vtype: RegType::REG_DWORD,
+                        vtype: REG_DWORD,
                         ref bytes,
                     } if bytes.len() >= 4 => {
                         let mut arr = [0u8; 4];

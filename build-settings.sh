@@ -8,7 +8,7 @@ need() { command -v "$1" &>/dev/null || { echo "❌ Требуется '$1'"; ex
 # ---- Project metadata ----
 CRATE_NAME="${CRATE_NAME:-blp-thumb-win}"
 LIB_NAME="${LIB_NAME:-blp_thumb_win}"            # -> blp_thumb_win.dll
-BIN_NAME="${BIN_NAME:-blp-thumb-installer}"      # -> blp-thumb-installer.exe
+BIN_NAME="${BIN_NAME:-blp-thumb-win-installer}"      # -> blp-thumb-win-installer.exe
 
 # ---- Profile ----
 PROFILE="${PROFILE:-release}"
