@@ -636,9 +636,9 @@ fn toggle_logging() -> io::Result<()> {
 /* ---------- Registry / files ---------- */
 
 fn materialize_embedded_dll_machine() -> io::Result<PathBuf> {
-    let base = env::var_os("PROGRAMFILES")
+    let base = env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\\Program Files"));
+        .unwrap_or_else(|| PathBuf::from(r"C:\\Users\\Default\\AppData\\Local"));
     materialize_embedded_dll_at(base)
 }
 
