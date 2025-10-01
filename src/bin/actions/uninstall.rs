@@ -126,7 +126,18 @@ fn unregister_com_scope(scope: RegistryScope) -> io::Result<()> {
     for (clsid, _) in &classes {
         let _ = root.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
     }
+
+    log_cli(format!(
+        "Unregister COM [{}]: removing extension and ProgID keys",
+        scope_name
+    ));
     let _ = root.delete_subkey_all(format!(r"Software\Classes\{}", DEFAULT_PROGID));
+    let _ = root.delete_subkey_all(format!(r"Software\Classes\{}", ext));
+
+    log_cli(format!(
+        r"Unregister COM [{}]: removing Shell Extensions\Approved entries",
+        scope_name
+    ));
     let _ = root
         .open_subkey_with_flags(
             r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
