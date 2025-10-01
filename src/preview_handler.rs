@@ -5,35 +5,36 @@ use crate::{
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, HWND, RECT, S_FALSE};
-use windows::Win32::Graphics::Gdi::{
-    AC_SRC_ALPHA, AC_SRC_OVER, AlphaBlend, BLENDFUNCTION, CreateCompatibleDC, DeleteDC,
-    DeleteObject, GetDC, ReleaseDC, SelectObject,
-};
+use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, HWND, LPARAM, RECT, S_FALSE, WPARAM};
+use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP};
 use windows::Win32::System::Com::{ISequentialStream, IStream, STREAM_SEEK_SET};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Ole::IOleWindow_Impl;
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IInitializeWithFile_Impl, IInitializeWithStream_Impl,
 };
 use windows::Win32::UI::Shell::{
     IInitializeWithItem_Impl, IPreviewHandler_Impl, IShellItem, SIGDN_FILESYSPATH,
 };
-use windows::Win32::UI::WindowsAndMessaging::MSG;
-use windows::core::{Error, Interface, Result as WinResult};
+use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DestroyWindow, IMAGE_BITMAP, MSG, STM_SETIMAGE, SW_SHOWNORMAL, SWP_NOACTIVATE,
+    SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SendMessageW, SetWindowPos, ShowWindow, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE,
+};
+use windows::core::{Error, Interface, Result as WinResult, w};
 use windows_core::{BOOL, PCWSTR, PWSTR};
 use windows_implement::implement;
 
-#[derive(Clone)]
-struct StoredImage {
-    width: u32,
-    height: u32,
-    rgba: Arc<[u8]>,
-}
+const SS_BITMAP: WINDOW_STYLE = WINDOW_STYLE(0x0000000E);
 
 #[derive(Default)]
 struct PreviewUi {
     parent: Option<HWND>,
     rect: RECT,
-    image: Option<StoredImage>,
+    window: Option<HWND>,
+    hbitmap: Option<HBITMAP>,
+    image: Option<(u32, u32, Arc<[u8]>)>,
 }
 
 #[implement(
@@ -87,72 +88,109 @@ impl BlpPreviewHandler {
         Ok((Arc::from(raw), false))
     }
 
-    fn repaint_locked(ui: &PreviewUi) -> WinResult<()> {
-        let hwnd = ui.parent.ok_or_else(|| Error::from(E_FAIL))?;
+    fn destroy_child(ui: &mut PreviewUi) {
+        if let Some(hwnd) = ui.window.take() {
+            unsafe {
+                let old = SendMessageW(
+                    hwnd,
+                    STM_SETIMAGE,
+                    Some(WPARAM(IMAGE_BITMAP.0 as usize)),
+                    Some(LPARAM(0)),
+                );
+                if old.0 != 0 {
+                    let _ = DeleteObject(HBITMAP(old.0 as isize as *mut _).into());
+                }
+                let _ = DestroyWindow(hwnd);
+            }
+        }
+        if let Some(old) = ui.hbitmap.take() {
+            unsafe {
+                let _ = DeleteObject(old.into());
+            }
+        }
+    }
+
+    fn ensure_window(ui: &mut PreviewUi) -> WinResult<HWND> {
+        if let Some(hwnd) = ui.window {
+            return Ok(hwnd);
+        }
+
+        let parent = ui.parent.ok_or_else(|| Error::from(E_FAIL))?;
         let rect = ui.rect;
-        let image = match &ui.image {
-            Some(img) => img.clone(),
+        let width = (rect.right - rect.left).max(1);
+        let height = (rect.bottom - rect.top).max(1);
+        let instance = unsafe { GetModuleHandleW(None) }?;
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                PCWSTR::null(),
+                WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_CLIPCHILDREN.0 | WS_CLIPSIBLINGS.0)
+                    | SS_BITMAP,
+                rect.left,
+                rect.top,
+                width,
+                height,
+                Some(parent),
+                None,
+                Some(instance.into()),
+                None,
+            )?
+        };
+
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+        }
+
+        ui.window = Some(hwnd);
+        Ok(hwnd)
+    }
+
+    fn render_current(ui: &mut PreviewUi) -> WinResult<()> {
+        let (iw, ih, data) = match &ui.image {
+            Some(tuple) => tuple.clone(),
             None => return Ok(()),
         };
 
-        let width = (rect.right - rect.left).max(1) as u32;
-        let height = (rect.bottom - rect.top).max(1) as u32;
-        let (dest_w, dest_h, rgba_fit) =
-            resize_fit_rgba_rect(&image.rgba[..], image.width, image.height, width, height);
+        let hwnd = Self::ensure_window(ui)?;
+        let target_w = (ui.rect.right - ui.rect.left).max(1) as u32;
+        let target_h = (ui.rect.bottom - ui.rect.top).max(1) as u32;
+        let (tw, th, rgba_fit) = resize_fit_rgba_rect(&data, iw, ih, target_w, target_h);
         let bgra = rgba_to_bgra_premul(&rgba_fit);
-        let hbmp = unsafe { create_hbitmap_bgra_premul(dest_w as i32, dest_h as i32, &bgra)? };
+        let hbmp = unsafe { create_hbitmap_bgra_premul(tw as i32, th as i32, &bgra)? };
 
+        let offset_x = ui.rect.left + ((target_w as i32 - tw as i32) / 2);
+        let offset_y = ui.rect.top + ((target_h as i32 - th as i32) / 2);
         unsafe {
-            let hdc = GetDC(Some(hwnd));
-            if hdc.0.is_null() {
-                let _ = DeleteObject(hbmp.into());
-                return Err(Error::from(E_FAIL));
-            }
-            let mem_dc = CreateCompatibleDC(Some(hdc));
-            if mem_dc.0.is_null() {
-                let _ = ReleaseDC(Some(hwnd), hdc);
-                let _ = DeleteObject(hbmp.into());
-                return Err(Error::from(E_FAIL));
-            }
-
-            let old = SelectObject(mem_dc, hbmp.into());
-
-            let available_w = width as i32;
-            let available_h = height as i32;
-            let offset_x = rect.left + ((available_w - dest_w as i32) / 2);
-            let offset_y = rect.top + ((available_h - dest_h as i32) / 2);
-
-            let blend = BLENDFUNCTION {
-                BlendOp: AC_SRC_OVER as u8,
-                BlendFlags: 0,
-                SourceConstantAlpha: 255,
-                AlphaFormat: AC_SRC_ALPHA as u8,
-            };
-
-            let success = AlphaBlend(
-                hdc,
+            SetWindowPos(
+                hwnd,
+                None,
                 offset_x,
                 offset_y,
-                dest_w as i32,
-                dest_h as i32,
-                mem_dc,
-                0,
-                0,
-                dest_w as i32,
-                dest_h as i32,
-                blend,
+                tw as i32,
+                th as i32,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING,
+            )?;
+        }
+
+        let previous = unsafe {
+            SendMessageW(
+                hwnd,
+                STM_SETIMAGE,
+                Some(WPARAM(IMAGE_BITMAP.0 as usize)),
+                Some(LPARAM(hbmp.0 as isize)),
             )
-            .as_bool();
+        };
 
-            if !old.0.is_null() {
-                let _ = SelectObject(mem_dc, old);
+        if let Some(old) = ui.hbitmap.replace(hbmp) {
+            unsafe {
+                let _ = DeleteObject(old.into());
             }
-            let _ = DeleteDC(mem_dc);
-            let _ = ReleaseDC(Some(hwnd), hdc);
-            let _ = DeleteObject(hbmp.into());
+        }
 
-            if !success {
-                return Err(Error::from(E_FAIL));
+        if previous.0 != 0 {
+            unsafe {
+                let _ = DeleteObject(HBITMAP(previous.0 as isize as *mut _).into());
             }
         }
 
@@ -165,6 +203,7 @@ impl Drop for BlpPreviewHandler {
         DLL_LOCK_COUNT.fetch_sub(1, Ordering::SeqCst);
         let _ = log_desktop("BlpPreviewHandler::drop");
         let mut ui = self.ui.lock().unwrap();
+        Self::destroy_child(&mut ui);
         ui.image = None;
     }
 }
@@ -234,6 +273,9 @@ impl IInitializeWithStream_Impl for BlpPreviewHandler_Impl {
             };
 
             if hr.is_err() {
+                if hr == windows::core::HRESULT::from(S_FALSE) {
+                    break;
+                }
                 return Err(Error::from(hr));
             }
 
@@ -253,7 +295,7 @@ impl IInitializeWithStream_Impl for BlpPreviewHandler_Impl {
 
         let mut st = self.state.lock().unwrap();
         st.path_utf8 = None;
-        st.stream_data = Some(Arc::<[u8]>::from(data));
+        st.stream_data = Some(Arc::from(data));
         drop(st);
         let _ = log_desktop("BlpPreviewHandler::Initialize stream cached");
         Ok(())
@@ -268,6 +310,9 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         }
         let rect = unsafe { *prc };
         let mut ui = self.ui.lock().unwrap();
+        if ui.parent != Some(hwnd) {
+            BlpPreviewHandler::destroy_child(&mut ui);
+        }
         ui.parent = Some(hwnd);
         ui.rect = rect;
         let _ = log_desktop(format!(
@@ -275,7 +320,7 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
             hwnd, rect.left, rect.top, rect.right, rect.bottom
         ));
         if ui.image.is_some() {
-            BlpPreviewHandler::repaint_locked(&ui)?;
+            BlpPreviewHandler::render_current(&mut ui)?;
         }
         Ok(())
     }
@@ -289,7 +334,7 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         let mut ui = self.ui.lock().unwrap();
         ui.rect = rect;
         if ui.image.is_some() {
-            BlpPreviewHandler::repaint_locked(&ui)?;
+            BlpPreviewHandler::render_current(&mut ui)?;
         }
         Ok(())
     }
@@ -301,14 +346,8 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         let (w, h, rgba) = decode_blp_rgba(&data).map_err(|_| Error::from(E_FAIL))?;
 
         let mut ui = self.ui.lock().unwrap();
-        ui.image = Some(StoredImage {
-            width: w,
-            height: h,
-            rgba: Arc::<[u8]>::from(rgba),
-        });
-        if ui.parent.is_some() {
-            BlpPreviewHandler::repaint_locked(&ui)?;
-        }
+        ui.image = Some((w, h, Arc::from(rgba)));
+        BlpPreviewHandler::render_current(&mut ui)?;
 
         let _ = log_desktop(format!(
             "BlpPreviewHandler::DoPreview decoded source {}x{} (stream={})",
@@ -321,19 +360,28 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
     fn Unload(&self) -> WinResult<()> {
         let _ = log_desktop("BlpPreviewHandler::Unload");
         let mut ui = self.ui.lock().unwrap();
+        BlpPreviewHandler::destroy_child(&mut ui);
         ui.image = None;
         Ok(())
     }
 
     #[allow(non_snake_case)]
     fn SetFocus(&self) -> WinResult<()> {
-        Ok(())
+        let ui = self.ui.lock().unwrap();
+        if let Some(hwnd) = ui.window.or(ui.parent) {
+            unsafe {
+                let _ = SetFocus(Some(hwnd));
+            }
+            Ok(())
+        } else {
+            Err(Error::from(E_FAIL))
+        }
     }
 
     #[allow(non_snake_case)]
     fn QueryFocus(&self) -> WinResult<HWND> {
         let ui = self.ui.lock().unwrap();
-        ui.parent.ok_or_else(|| Error::from(E_FAIL))
+        ui.window.or(ui.parent).ok_or_else(|| Error::from(E_FAIL))
     }
 
     #[allow(non_snake_case)]
@@ -342,15 +390,15 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
     }
 }
 
-impl windows::Win32::System::Ole::IOleWindow_Impl for BlpPreviewHandler_Impl {
+impl IOleWindow_Impl for BlpPreviewHandler_Impl {
     #[allow(non_snake_case)]
     fn GetWindow(&self) -> WinResult<HWND> {
         let ui = self.ui.lock().unwrap();
-        ui.parent.ok_or_else(|| Error::from(E_FAIL))
+        ui.window.or(ui.parent).ok_or_else(|| Error::from(E_FAIL))
     }
 
     #[allow(non_snake_case)]
-    fn ContextSensitiveHelp(&self, _fentermode: BOOL) -> WinResult<()> {
+    fn ContextSensitiveHelp(&self, _fenter_mode: BOOL) -> WinResult<()> {
         Err(Error::from(S_FALSE))
     }
 }
