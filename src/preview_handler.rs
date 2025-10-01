@@ -10,13 +10,13 @@ use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP};
 use windows::Win32::System::Com::{ISequentialStream, IStream, STREAM_SEEK_SET};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::IOleWindow_Impl;
+use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IInitializeWithFile_Impl, IInitializeWithStream_Impl,
 };
 use windows::Win32::UI::Shell::{
     IInitializeWithItem_Impl, IPreviewHandler_Impl, IShellItem, SIGDN_FILESYSPATH,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, IMAGE_BITMAP, MSG, STM_SETIMAGE, SW_SHOWNORMAL, SWP_NOACTIVATE,
     SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SendMessageW, SetWindowPos, ShowWindow, WINDOW_EX_STYLE,
@@ -98,7 +98,7 @@ impl BlpPreviewHandler {
                     Some(LPARAM(0)),
                 );
                 if old.0 != 0 {
-                    let _ = DeleteObject(HBITMAP(old.0 as isize as *mut _).into());
+                    let _ = DeleteObject(HBITMAP(old.0 as *mut _).into());
                 }
                 let _ = DestroyWindow(hwnd);
             }
@@ -190,7 +190,7 @@ impl BlpPreviewHandler {
 
         if previous.0 != 0 {
             unsafe {
-                let _ = DeleteObject(HBITMAP(previous.0 as isize as *mut _).into());
+                let _ = DeleteObject(HBITMAP(previous.0 as *mut _).into());
             }
         }
 

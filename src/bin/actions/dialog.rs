@@ -1,8 +1,7 @@
+use crate::clear_cache::clear_cache;
 use crate::install::install;
 use crate::restart_explorer::restart_explorer;
-use crate::{
-    clear_associations, clear_thumb_cache, fix_explorer, status, toggle_logging, uninstall,
-};
+use crate::{clear_associations, fix_explorer, status, toggle_logging, uninstall};
 use blp_thumb_win::log::log_endabled;
 use dialoguer::Select;
 use dialoguer::console::{Term, style};
@@ -90,7 +89,7 @@ pub fn action_execute(action: Action) -> io::Result<()> {
         Action::Status => status(),
         Action::FixExplorer => fix_explorer(),
         Action::RestartExplorer => restart_explorer(),
-        Action::ClearThumbCache => clear_thumb_cache(),
+        Action::ClearThumbCache => clear_cache(),
         Action::ClearAssociations => clear_associations(),
         Action::ToggleLogging => toggle_logging(),
         Action::Exit => Ok(()),
