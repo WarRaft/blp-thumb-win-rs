@@ -1,7 +1,8 @@
 use crate::clear_cache::clear_cache;
 use crate::install::install;
 use crate::restart_explorer::restart_explorer;
-use crate::{clear_associations, fix_explorer, status, toggle_logging, uninstall};
+use crate::toggle_logging;
+use crate::uninstall::uninstall;
 use blp_thumb_win::log::log_endabled;
 use dialoguer::Select;
 use dialoguer::console::{Term, style};
@@ -12,11 +13,8 @@ use std::io;
 pub enum Action {
     Install,
     Uninstall,
-    Status,
-    FixExplorer,
     RestartExplorer,
     ClearThumbCache,
-    ClearAssociations,
     ToggleLogging,
     Exit,
 }
@@ -28,9 +26,7 @@ fn theme() -> ColorfulTheme {
     t.inactive_item_prefix = style(" ".to_string());
     t.picked_item_prefix = style(">".to_string());
     t.unpicked_item_prefix = style(" ".to_string());
-
     t.prompt_prefix = style("$".to_string());
-
     t.success_prefix = style(">".to_string());
     t.error_prefix = style("!".to_string());
     t
@@ -40,21 +36,15 @@ pub fn action_choose() -> io::Result<(Action, String)> {
     let mut actions = vec![
         Action::Install,
         Action::Uninstall,
-        Action::Status,
-        Action::FixExplorer,
         Action::RestartExplorer,
         Action::ClearThumbCache,
-        Action::ClearAssociations,
     ];
 
     let mut labels: Vec<String> = vec![
         "Install (all users)".into(),
         "Uninstall (all users)".into(),
-        "Status".into(),
-        "Fix Explorer settings".into(),
         "Restart Explorer".into(),
         "Clear thumbnail cache".into(),
-        "Clear associations".into(),
     ];
 
     let logging_enabled = log_endabled();
@@ -86,11 +76,8 @@ pub fn action_execute(action: Action) -> io::Result<()> {
     match action {
         Action::Install => install(),
         Action::Uninstall => uninstall(),
-        Action::Status => status(),
-        Action::FixExplorer => fix_explorer(),
         Action::RestartExplorer => restart_explorer(),
         Action::ClearThumbCache => clear_cache(),
-        Action::ClearAssociations => clear_associations(),
         Action::ToggleLogging => toggle_logging(),
         Action::Exit => Ok(()),
     }

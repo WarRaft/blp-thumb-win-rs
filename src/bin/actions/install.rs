@@ -1,7 +1,6 @@
 use crate::{
     RegistryScope, clear_shell_ext_cache_scope, enforce_thumbnail_settings_scope,
-    materialize_embedded_dll_machine, normalize_ext, notify_shell_assoc, probe_status,
-    register_com_scope,
+    materialize_embedded_dll_machine, normalize_ext, notify_shell_assoc, register_com_scope,
 };
 use blp_thumb_win::keys::{clsid_str, preview_clsid_str, shell_preview_handler_catid_str};
 use blp_thumb_win::log::log_cli;
@@ -107,21 +106,6 @@ pub fn install() -> io::Result<()> {
     }
 
     notify_shell_assoc("install-all");
-
-    match probe_status() {
-        Ok(report) => {
-            if !report.is_ready() {
-                for alert in &report.alerts {
-                    log_cli(format!("Install verify alert: {}", alert));
-                }
-                warnings.push("Verification reported issues; see Status".to_string());
-            }
-        }
-        Err(err) => {
-            warnings.push(format!("Verification failed: {}", err));
-            log_cli(format!("Install: probe_status failed: {}", err));
-        }
-    }
 
     if warnings.is_empty() {
         println!("Installed in HKLM and HKCU. Use 'Restart Explorer' to refresh thumbnails.");
