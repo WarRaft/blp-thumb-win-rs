@@ -1,10 +1,6 @@
 #![cfg(windows)]
 
-use std::{
-    env, fs, io,
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::{env, fs, io, io::Write, path::Path};
 
 use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 use winreg::{RegKey, enums::*};
@@ -205,37 +201,6 @@ fn toggle_logging() -> io::Result<()> {
     ));
     println!("Logging {}.", if target { "enabled" } else { "disabled" });
     Ok(())
-}
-
-/* ---------- Registry / files ---------- */
-
-fn materialize_embedded_dll_machine() -> io::Result<PathBuf> {
-    let base = env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\\Users\\Default\\AppData\\Local"));
-    materialize_embedded_dll_at(base)
-}
-
-fn materialize_embedded_dll_at(base: PathBuf) -> io::Result<PathBuf> {
-    log_cli(format!(
-        "Materialize DLL: base directory {}",
-        base.display()
-    ));
-    let dir = base.join("blp-thumb-win");
-    log_cli(format!(
-        "Materialize DLL: ensuring directory {}",
-        dir.display()
-    ));
-    fs::create_dir_all(&dir)?;
-    let path = dir.join("blp_thumb_win.dll");
-    log_cli(format!(
-        "Materialize DLL: writing {} ({} bytes)",
-        path.display(),
-        DLL_BYTES.len()
-    ));
-    fs::write(&path, DLL_BYTES)?;
-    log_cli("Materialize DLL: completed");
-    Ok(path)
 }
 
 fn normalize_ext(raw: &str) -> String {

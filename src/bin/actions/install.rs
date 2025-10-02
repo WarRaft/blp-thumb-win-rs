@@ -1,65 +1,19 @@
 use crate::{
-    RegistryScope, clear_shell_ext_cache_scope, enforce_thumbnail_settings_scope,
-    materialize_embedded_dll_machine, normalize_ext, notify_shell_assoc, register_com_scope,
+    DLL_BYTES, RegistryScope, clear_shell_ext_cache_scope, enforce_thumbnail_settings_scope,
+    normalize_ext, notify_shell_assoc, register_com_scope,
 };
 use blp_thumb_win::keys::{clsid_str, preview_clsid_str, shell_preview_handler_catid_str};
 use blp_thumb_win::log::log_cli;
-use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::{env, fs, io};
 
 const DEFAULT_EXT: &str = "blp";
 const DEFAULT_PROGID: &str = "BlpThumbnailHandler";
 const PREVIEW_FRIENDLY_NAME: &str = "BLP Thumbnail Preview Handler";
 
-/// Ensure the preview handler CLSID is properly registered under HKCU and HKLM.
-/// This includes binding it to the .blp extension and ProgID.
-fn register_preview_handler(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
-    let scope_name = scope.name();
-    log_cli(format!(
-        "Register Preview Handler [{}]: start (dll={})",
-        scope_name,
-        dll_path.display()
-    ));
-
-    let root = scope.root();
-    let preview_clsid = preview_clsid_str();
-    let preview_catid = shell_preview_handler_catid_str();
-    let ext = normalize_ext(DEFAULT_EXT);
-
-    // Register CLSID for the preview handler
-    let (key_clsid, _) =
-        root.create_subkey(format!(r"Software\Classes\CLSID\{}", preview_clsid))?;
-    key_clsid.set_value("", &PREVIEW_FRIENDLY_NAME)?;
-    key_clsid.set_value("DisableProcessIsolation", &1u32)?;
-
-    let (key_inproc, _) = root.create_subkey(format!(
-        r"Software\Classes\CLSID\{}\InprocServer32",
-        preview_clsid
-    ))?;
-    key_inproc.set_value("", &dll_path.as_os_str())?;
-    key_inproc.set_value("ThreadingModel", &"Apartment")?;
-
-    // Bind CLSID to the .blp extension
-    let (key_ext_shellex, _) = root.create_subkey(format!(r"Software\Classes\{}\ShellEx", ext))?;
-    let (key_ext_entry, _) = key_ext_shellex.create_subkey(&preview_catid)?;
-    key_ext_entry.set_value("", &preview_clsid)?;
-
-    // Bind CLSID to the ProgID
-    let (progid_key, _) = root.create_subkey(format!(r"Software\Classes\{}", DEFAULT_PROGID))?;
-    let (pid_shellex, _) = progid_key.create_subkey("ShellEx")?;
-    let (pid_entry, _) = pid_shellex.create_subkey(&preview_catid)?;
-    pid_entry.set_value("", &preview_clsid)?;
-
-    log_cli(format!(
-        "Register Preview Handler [{}]: completed",
-        scope_name
-    ));
-    Ok(())
-}
-
 pub fn install() -> io::Result<()> {
     log_cli("Install (all users): start");
-    let dll_path = materialize_embedded_dll_machine()?;
+    let dll_path = materialize_embedded_dll()?;
     log_cli(format!(
         "Install (all users): DLL materialized to {}",
         dll_path.display()
@@ -115,5 +69,88 @@ pub fn install() -> io::Result<()> {
             println!("  - {}", warn);
         }
     }
+    Ok(())
+}
+
+fn materialize_embedded_dll() -> io::Result<PathBuf> {
+    let base = env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\\Users\\Default\\AppData\\Local"));
+
+    log_cli(format!(
+        "Materialize DLL: base directory {}",
+        base.display()
+    ));
+
+    let dir = base.join("blp-thumb-win");
+    log_cli(format!(
+        "Materialize DLL: ensuring directory {}",
+        dir.display()
+    ));
+
+    fs::create_dir_all(&dir).map_err(|e| {
+        log_cli(format!("❌ Failed to create dir {}: {}", dir.display(), e));
+        e
+    })?;
+
+    let path = dir.join("blp_thumb_win.dll");
+    log_cli(format!(
+        "Materialize DLL: writing {} ({} bytes)",
+        path.display(),
+        DLL_BYTES.len()
+    ));
+
+    fs::write(&path, DLL_BYTES).map_err(|e| {
+        log_cli(format!("❌ Failed to write DLL {}: {}", path.display(), e));
+        e
+    })?;
+
+    log_cli("Materialize DLL: completed");
+    Ok(path)
+}
+
+/// Ensure the preview handler CLSID is properly registered under HKCU and HKLM.
+/// This includes binding it to the .blp extension and ProgID.
+fn register_preview_handler(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
+    let scope_name = scope.name();
+    log_cli(format!(
+        "Register Preview Handler [{}]: start (dll={})",
+        scope_name,
+        dll_path.display()
+    ));
+
+    let root = scope.root();
+    let preview_clsid = preview_clsid_str();
+    let preview_catid = shell_preview_handler_catid_str();
+    let ext = normalize_ext(DEFAULT_EXT);
+
+    // Register CLSID for the preview handler
+    let (key_clsid, _) =
+        root.create_subkey(format!(r"Software\Classes\CLSID\{}", preview_clsid))?;
+    key_clsid.set_value("", &PREVIEW_FRIENDLY_NAME)?;
+    key_clsid.set_value("DisableProcessIsolation", &1u32)?;
+
+    let (key_inproc, _) = root.create_subkey(format!(
+        r"Software\Classes\CLSID\{}\InprocServer32",
+        preview_clsid
+    ))?;
+    key_inproc.set_value("", &dll_path.as_os_str())?;
+    key_inproc.set_value("ThreadingModel", &"Apartment")?;
+
+    // Bind CLSID to the .blp extension
+    let (key_ext_shellex, _) = root.create_subkey(format!(r"Software\Classes\{}\ShellEx", ext))?;
+    let (key_ext_entry, _) = key_ext_shellex.create_subkey(&preview_catid)?;
+    key_ext_entry.set_value("", &preview_clsid)?;
+
+    // Bind CLSID to the ProgID
+    let (progid_key, _) = root.create_subkey(format!(r"Software\Classes\{}", DEFAULT_PROGID))?;
+    let (pid_shellex, _) = progid_key.create_subkey("ShellEx")?;
+    let (pid_entry, _) = pid_shellex.create_subkey(&preview_catid)?;
+    pid_entry.set_value("", &preview_clsid)?;
+
+    log_cli(format!(
+        "Register Preview Handler [{}]: completed",
+        scope_name
+    ));
     Ok(())
 }
