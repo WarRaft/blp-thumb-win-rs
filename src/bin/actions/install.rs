@@ -11,11 +11,20 @@ use blp_thumb_win::log::log_cli;
 use std::path::{Path, PathBuf};
 use std::{env, fs, io};
 
-const DEFAULT_EXT: &str = "blp";
-const DEFAULT_PROGID: &str = "BlpThumbnailHandler";
-const PREVIEW_FRIENDLY_NAME: &str = "BLP Thumbnail Preview Handler";
+// Use registry helper from utils
 
 pub fn install() -> io::Result<()> {
+    // Call the real installer which uses `?` for errors, and log any error here.
+    if let Err(err) = install_inner() {
+        log_cli(format!("Install failed: {}", err));
+        return Err(err);
+    }
+    Ok(())
+}
+
+// Private implementation that contains the actual installation logic and returns
+// errors via `?` so the public wrapper can handle/log them.
+fn install_inner() -> io::Result<()> {
     log_cli("Install (all users): start");
     let dll_path = materialize_embedded_dll()?;
     log_cli(format!(
@@ -28,14 +37,6 @@ pub fn install() -> io::Result<()> {
     }
     if let Err(err) = register_com_scope(RegistryScope::CurrentUser, &dll_path) {
         warnings.push(format!("HKCU registration failed: {}", err));
-    }
-
-    // Register the preview handler explicitly
-    if let Err(err) = register_preview_handler(RegistryScope::LocalMachine, &dll_path) {
-        warnings.push(format!("HKLM preview handler registration failed: {}", err));
-    }
-    if let Err(err) = register_preview_handler(RegistryScope::CurrentUser, &dll_path) {
-        warnings.push(format!("HKCU preview handler registration failed: {}", err));
     }
 
     if warnings.is_empty() {
@@ -113,55 +114,66 @@ fn materialize_embedded_dll() -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Ensure the preview handler CLSID is properly registered under HKCU and HKLM.
-/// This includes binding it to the .blp extension and ProgID.
-fn register_preview_handler(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
-    let scope_name = scope.name();
-    log_cli(format!(
-        "Register Preview Handler [{}]: start (dll={})",
-        scope_name,
-        dll_path.display()
-    ));
-
-    let root = scope.root();
-    let preview_clsid = preview_clsid_str();
-    let preview_catid = shell_preview_handler_catid_str();
-    let ext = normalize_ext(DEFAULT_EXT);
-
-    // Register CLSID for the preview handler
-    let (key_clsid, _) =
-        root.create_subkey(format!(r"Software\Classes\CLSID\{}", preview_clsid))?;
-    key_clsid.set_value("", &PREVIEW_FRIENDLY_NAME)?;
-    key_clsid.set_value("DisableProcessIsolation", &1u32)?;
-
-    let (key_inproc, _) = root.create_subkey(format!(
-        r"Software\Classes\CLSID\{}\InprocServer32",
-        preview_clsid
-    ))?;
-    key_inproc.set_value("", &dll_path.as_os_str())?;
-    key_inproc.set_value("ThreadingModel", &"Apartment")?;
-
-    // Bind CLSID to the .blp extension
-    let (key_ext_shellex, _) = root.create_subkey(format!(r"Software\Classes\{}\ShellEx", ext))?;
-    let (key_ext_entry, _) = key_ext_shellex.create_subkey(&preview_catid)?;
-    key_ext_entry.set_value("", &preview_clsid)?;
-
-    // Bind CLSID to the ProgID
-    let (progid_key, _) = root.create_subkey(format!(r"Software\Classes\{}", DEFAULT_PROGID))?;
-    let (pid_shellex, _) = progid_key.create_subkey("ShellEx")?;
-    let (pid_entry, _) = pid_shellex.create_subkey(&preview_catid)?;
-    pid_entry.set_value("", &preview_clsid)?;
-
-    log_cli(format!(
-        "Register Preview Handler [{}]: completed",
-        scope_name
-    ));
-    Ok(())
-}
-
-/// Register CLSID + Inproc + ShellEx mapping under HKCU.
-/// We do not change icons or file type ownership.
-/// We bind under ProgID (if present) and under the extension itself.
+/// Register COM classes and shell bindings for this provider.
+///
+/// This function performs all registry writes needed for both the thumbnail
+/// handler and the preview handler. It follows the steps from the Microsoft
+/// documentation (links below) and intentionally writes to either HKLM or HKCU
+/// depending on `scope`.
+///
+/// Docs:
+/// - Thumbnail handlers: https://learn.microsoft.com/en-us/windows/win32/shell/thumbnail-providers
+/// - Preview handlers: https://learn.microsoft.com/ru-ru/windows/win32/shell/preview-handlers
+///
+/// Registry layout (ASCII tree):
+///
+/// HKLM / HKCU
+/// └─ Software
+///    └─ Classes
+///       ├─ .blp
+///       │  (Default) = WarRaft.BLP                ; file extension -> ProgID
+///       │  Content Type = image/x-blp
+///       │  PerceivedType = image
+///       ├─ WarRaft.BLP                            ; ProgID
+///       │  (Default) = BLP Thumbnail Provider
+///       │  ShellEx
+///       │  └─ {8895B1C6-B41F-4C1C-A562-0D564250836F} = {CLSID_BLP_PREVIEW}
+///       │  ThumbnailCutoff, TypeOverlay, etc. (optional)
+///       └─ CLSID
+///          ├─ {CLSID_BLP_THUMB}
+///          │  (Default) = BLP Thumbnail Provider
+///          │  DisableProcessIsolation = 1
+///          │  InprocServer32
+///          │  └─ (Default) = %LOCALAPPDATA%\blp-thumb-win\blp_thumb_win.dll
+///          │     ThreadingModel = Apartment
+///          │     ProgID = WarRaft.BLP
+///          │  Implemented Categories
+///          │  └─ {E357FCCD-A995-4576-B01F-234630154E96}
+///          └─ {CLSID_BLP_PREVIEW}
+///             (Default) = BLP Preview Handler
+///             DisplayName = @blp_thumb_win.dll,-101    ; optional but helpful
+///             AppID = {534A1E02-D58F-44f0-B58B-36CBED287C7C} ; enables prevhost usage
+///             DisableProcessIsolation = 1
+///             InprocServer32
+///             └─ (Default) = %LOCALAPPDATA%\blp-thumb-win\blp_thumb_win.dll
+///                ThreadingModel = Apartment
+///                ProgID = WarRaft.BLP
+///             Implemented Categories
+///             └─ {8895B1C6-B41F-4C1C-A562-0D564250836F}
+///
+/// And finally, the system lists used by Explorer:
+///
+/// HKLM / HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers
+///    (Default) entries mapping extension -> thumbnail CLSID
+///
+/// HKLM / HKCU\Software\Microsoft\Windows\CurrentVersion\PreviewHandlers
+///    {CLSID_BLP_PREVIEW} = "BLP Preview Handler"
+///
+/// Notes:
+/// - We prefer writing ProgID/Preview/Thumbnail registration in a single
+///   function to avoid duplication and keep the installer deterministic.
+/// - `AppID` is optional; it helps Windows host preview handlers in Prevhost
+///   when appropriate (useful for cross-bitness isolation).
 fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
     let scope_name = scope.name();
     log_cli(format!(
@@ -194,28 +206,89 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
             "Register COM [{}]: configuring CLSID {}",
             scope_name, clsid
         ));
-        let (key_clsid, _) = root.create_subkey(format!(r"Software\Classes\CLSID\{}", clsid))?;
+        let path_clsid = format!(r"Software\\Classes\\CLSID\\{}", clsid);
+        log_cli(format!("Creating registry key: {}", path_clsid));
+        let (key_clsid, _) = root.create_subkey(path_clsid)?;
+        log_cli(format!(
+            "Setting value: {}\\(Default) = {}",
+            clsid, friendly
+        ));
         key_clsid.set_value("", friendly)?;
+        log_cli(format!(
+            "Setting value: {}\\DisableProcessIsolation = {}",
+            clsid, 1
+        ));
+        // Per MS docs: set DisplayName and AppID to help preview host and debugging
+        if *catid == &preview_catid {
+            log_cli(format!(
+                "Setting value: {}\\DisplayName = @{}",
+                clsid,
+                dll_path.display()
+            ));
+            key_clsid.set_value("DisplayName", &format!("@{}", dll_path.display()))?;
+            log_cli(format!(
+                "Setting value: {}\\AppID = {}",
+                clsid,
+                blp_thumb_win::keys::APP_ID
+            ));
+            key_clsid.set_value("AppID", &blp_thumb_win::keys::APP_ID.to_string())?;
+        }
         key_clsid.set_value("DisableProcessIsolation", &1u32)?;
 
-        let (key_inproc, _) =
-            root.create_subkey(format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid))?;
+        let (key_inproc, _) = root.create_subkey(format!(
+            r"Software\\Classes\\CLSID\\{}\\InprocServer32",
+            clsid
+        ))?;
+        log_cli(format!(
+            "Creating registry key: Software\\Classes\\CLSID\\{}\\InprocServer32",
+            clsid
+        ));
+        log_cli(format!(
+            "Setting value: {}\\InprocServer32\\(Default) = {}",
+            clsid,
+            dll_path.display()
+        ));
         key_inproc.set_value("", &dll_path.as_os_str())?;
+        // Suggest associating ProgID inside InprocServer32 per docs (helps some hosts)
+        if *catid == &preview_catid {
+            log_cli(format!(
+                "Setting value: {}\\InprocServer32\\ProgID = {}",
+                clsid,
+                blp_thumb_win::keys::DEFAULT_PROGID
+            ));
+            key_inproc.set_value("ProgID", &blp_thumb_win::keys::DEFAULT_PROGID.to_string())?;
+            log_cli(format!(
+                "Setting value: {}\\InprocServer32\\VersionIndependentProgID = {}",
+                clsid,
+                blp_thumb_win::keys::DEFAULT_PROGID
+            ));
+            key_inproc.set_value(
+                "VersionIndependentProgID",
+                &blp_thumb_win::keys::DEFAULT_PROGID.to_string(),
+            )?;
+        }
         key_inproc.set_value("ThreadingModel", &"Apartment")?;
 
+        log_cli(format!("Approved list: setting {} = {}", clsid, friendly));
         approved.set_value(clsid, friendly)?;
 
-        let _ = root.create_subkey(format!(
-            r"Software\Classes\CLSID\{}\Implemented Categories\{}",
+        let impl_cat_path = format!(
+            "Software\\Classes\\CLSID\\{}\\Implemented Categories\\{}",
             clsid, catid
-        ))?;
+        );
+        log_cli(format!("Creating registry key: {}", impl_cat_path));
+        let _ = root.create_subkey(impl_cat_path)?;
     }
 
     log_cli(format!(
         "Register COM [{}]: ensuring extension metadata",
         scope_name
     ));
-    let (ext_key, _) = root.create_subkey(format!(r"Software\Classes\{}", ext))?;
+    let (ext_key, _) = root.create_subkey(format!(r"Software\\Classes\\{}", ext))?;
+    log_cli(format!(
+        "Ensuring extension key: Software\\Classes\\{}",
+        ext
+    ));
     match ext_key.get_value::<String, _>("Content Type") {
         Ok(existing)
             if !existing.trim_matches(char::from(0)).is_empty() && existing != "image/x-blp" =>
@@ -226,9 +299,17 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
             ));
         }
         _ => {
+            log_cli(format!(
+                "Setting value: Software\\Classes\\{}\\Content Type = image/x-blp",
+                ext
+            ));
             ext_key.set_value("Content Type", &"image/x-blp")?;
         }
     }
+    log_cli(format!(
+        "Setting value: Software\\Classes\\{}\\PerceivedType = image",
+        ext
+    ));
     ext_key.set_value("PerceivedType", &"image")?;
 
     match ext_key.get_value::<String, _>("") {
@@ -243,6 +324,11 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
                 "Register COM [{}]: setting extension default to WarRaft.BLP",
                 scope_name
             ));
+            log_cli(format!(
+                "Setting default ProgID: Software\\Classes\\{}\\(Default) = {}",
+                ext,
+                blp_thumb_win::keys::DEFAULT_PROGID
+            ));
             ext_key.set_value("", &blp_thumb_win::keys::DEFAULT_PROGID)?;
         }
     }
@@ -252,20 +338,37 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         scope_name,
         blp_thumb_win::keys::DEFAULT_PROGID
     ));
-    let (progid_key, _) = root.create_subkey(format!(
-        r"Software\Classes\{}",
+    let progid_path = format!(
+        r"Software\\Classes\\{}",
         blp_thumb_win::keys::DEFAULT_PROGID
-    ))?;
+    );
+    log_cli(format!("Creating ProgID key: {}", progid_path));
+    let (progid_key, _) = root.create_subkey(progid_path)?;
     if progid_key
         .get_value::<String, _>("")
         .map(|s| s.trim_matches(char::from(0)).is_empty())
         .unwrap_or(true)
     {
+        log_cli(format!(
+            "Setting value: {}\\(Default) = {}",
+            blp_thumb_win::keys::DEFAULT_PROGID,
+            FRIENDLY_NAME
+        ));
         progid_key.set_value("", &FRIENDLY_NAME)?;
     }
     let (pid_shellex, _) = progid_key.create_subkey("ShellEx")?;
     for (_, clsid, catid) in &classes {
+        let pid_entry_path = format!(
+            r"{}\\ShellEx\\{}",
+            blp_thumb_win::keys::DEFAULT_PROGID,
+            catid
+        );
+        log_cli(format!("Creating ProgID ShellEx entry: {}", pid_entry_path));
         let (pid_entry, _) = pid_shellex.create_subkey(catid)?;
+        log_cli(format!(
+            "Setting value: {}\\(Default) = {}",
+            pid_entry_path, clsid
+        ));
         pid_entry.set_value("", &clsid.as_str())?;
     }
 
@@ -273,9 +376,20 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         "Register COM [{}]: binding under extension {}",
         scope_name, ext
     ));
-    let (key_ext_shellex, _) = root.create_subkey(format!(r"Software\Classes\{}\ShellEx", ext))?;
+    let key_ext_shellex_path = format!(r"Software\\Classes\\{}\\ShellEx", ext);
+    log_cli(format!(
+        "Creating extension ShellEx key: {}",
+        key_ext_shellex_path
+    ));
+    let (key_ext_shellex, _) = root.create_subkey(key_ext_shellex_path)?;
     for (_, clsid, catid) in &classes {
+        let entry_path = format!(r"Software\\Classes\\{}\\ShellEx\\{}", ext, catid);
+        log_cli(format!("Creating extension ShellEx entry: {}", entry_path));
         let (key_ext_entry, _) = key_ext_shellex.create_subkey(catid)?;
+        log_cli(format!(
+            "Setting value: {}\\(Default) = {}",
+            entry_path, clsid
+        ));
         key_ext_entry.set_value("", &clsid.as_str())?;
     }
 
@@ -283,12 +397,29 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         "Register COM [{}]: binding under SystemFileAssociations {}",
         scope_name, ext
     ));
-    let (key_sys_shellex, _) = root.create_subkey(format!(
-        r"Software\Classes\SystemFileAssociations\{}\ShellEx",
+    let key_sys_shellex_path = format!(
+        r"Software\\Classes\\SystemFileAssociations\\{}\\ShellEx",
         ext
-    ))?;
+    );
+    log_cli(format!(
+        "Creating SystemFileAssociations ShellEx key: {}",
+        key_sys_shellex_path
+    ));
+    let (key_sys_shellex, _) = root.create_subkey(key_sys_shellex_path)?;
     for (_, clsid, catid) in &classes {
+        let entry_path = format!(
+            r"Software\\Classes\\SystemFileAssociations\\{}\\ShellEx\\{}",
+            ext, catid
+        );
+        log_cli(format!(
+            "Creating SystemFileAssociations ShellEx entry: {}",
+            entry_path
+        ));
         let (key_sys_entry, _) = key_sys_shellex.create_subkey(catid)?;
+        log_cli(format!(
+            "Setting value: {}\\(Default) = {}",
+            entry_path, clsid
+        ));
         key_sys_entry.set_value("", &clsid.as_str())?;
     }
 
@@ -296,11 +427,29 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         "Register COM [{}]: binding Explorer handlers",
         scope_name
     ));
-    let (thumb_handlers, _) = root
-        .create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers")?;
+    let thumb_handlers_path =
+        r"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ThumbnailHandlers";
+    log_cli(format!(
+        "Creating ThumbnailHandlers key: {}",
+        thumb_handlers_path
+    ));
+    let (thumb_handlers, _) = root.create_subkey(thumb_handlers_path)?;
+    log_cli(format!(
+        "Setting ThumbnailHandlers entry: {} = {}",
+        ext, thumb_clsid
+    ));
     thumb_handlers.set_value(&ext, &thumb_clsid)?;
-    let (preview_handlers, _) =
-        root.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers")?;
+    let preview_handlers_path = r"Software\\Microsoft\\Windows\\CurrentVersion\\PreviewHandlers";
+    log_cli(format!(
+        "Creating PreviewHandlers key: {}",
+        preview_handlers_path
+    ));
+    let (preview_handlers, _) = root.create_subkey(preview_handlers_path)?;
+    log_cli(format!(
+        "Setting PreviewHandlers entry: {} = {}",
+        preview_clsid,
+        blp_thumb_win::keys::PREVIEW_FRIENDLY_NAME
+    ));
     preview_handlers.set_value(&preview_clsid, &blp_thumb_win::keys::PREVIEW_FRIENDLY_NAME)?;
 
     if scope.is_user() {

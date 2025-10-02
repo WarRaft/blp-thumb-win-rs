@@ -1,8 +1,8 @@
-use crate::clear_cache::clear_cache;
-use crate::install::install;
-use crate::restart_explorer::restart_explorer;
+use crate::actiions::clear_cache::clear_cache;
+use crate::actiions::install::install;
+use crate::actiions::restart_explorer::restart_explorer;
+use crate::actiions::uninstall::uninstall;
 use crate::toggle_logging;
-use crate::uninstall::uninstall;
 use blp_thumb_win::log::log_endabled;
 use dialoguer::Select;
 use dialoguer::console::{Term, style};

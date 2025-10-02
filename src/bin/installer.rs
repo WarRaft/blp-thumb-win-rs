@@ -1,6 +1,6 @@
 #![cfg(windows)]
 
-use std::{env, fs, io, io::Write, path::Path};
+use std::{env, fs, io, io::Write};
 
 use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 use winreg::{RegKey, enums::*};
@@ -13,28 +13,15 @@ static DLL_BYTES: &[u8] = include_bytes!(concat!(
 ));
 
 // Single source of truth from the library (your keys module)
-use crate::dialog::{Action, action_choose, action_execute};
-use blp_thumb_win::keys::{
-    DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME, LOG_SETTINGS_SUBKEY, LOGGING_VALUE_NAME,
-    PREVIEW_FRIENDLY_NAME, clsid_str, preview_clsid_str, shell_preview_handler_catid_str,
-    shell_thumb_handler_catid_str,
-};
+use crate::actiions::dialog::{Action, action_choose, action_execute};
+use blp_thumb_win::keys::{LOG_SETTINGS_SUBKEY, LOGGING_VALUE_NAME};
 use blp_thumb_win::log::{log_cli, log_endabled};
 
-#[path = "actions/restart_explorer.rs"]
-mod restart_explorer;
+#[path = "actions/mod.rs"]
+mod actiions;
 
-#[path = "actions/install.rs"]
-mod install;
-
-#[path = "actions/dialog.rs"]
-mod dialog;
-
-#[path = "actions/clear_cache.rs"]
-mod clear_cache;
-
-#[path = "actions/uninstall.rs"]
-mod uninstall;
+#[path = "utils/mod.rs"]
+mod utils;
 
 fn main() -> io::Result<()> {
     log_cli("Installer started");

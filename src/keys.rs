@@ -38,6 +38,10 @@ pub const LOG_SETTINGS_SUBKEY: &str = r"Software\blp-thumb-win";
 /// Value under [`LOG_SETTINGS_SUBKEY`] toggling verbose logging (REG_DWORD 0/1).
 pub const LOGGING_VALUE_NAME: &str = "LoggingEnabled";
 
+/// AppID used by preview host surrogate (recommended for preview handlers on 64-bit OS).
+/// Using the well-known Prevhost AppID to allow using prevhost.exe when appropriate.
+pub const APP_ID: &str = "{534A1E02-D58F-44f0-B58B-36CBED287C7C}";
+
 /// ----- Helpers (format GUIDs for registry values) -----
 
 /// Returns `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` (uppercase, with braces).
