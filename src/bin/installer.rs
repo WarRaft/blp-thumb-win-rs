@@ -2,7 +2,6 @@
 
 use std::{env, fs, io, io::Write};
 
-use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 use winreg::{RegKey, enums::*};
 
 // Embedded DLL that you copy into ./bin/ at build time.
@@ -73,91 +72,6 @@ impl RegistryScope {
     }
 }
 
-fn clear_shell_ext_cache_scope(scope: RegistryScope, clsid: &str) -> io::Result<usize> {
-    let root = scope.root();
-    let path = r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Cached";
-    let key = match root.open_subkey_with_flags(path, KEY_READ | KEY_SET_VALUE) {
-        Ok(k) => k,
-        Err(err) => {
-            if err.kind() == io::ErrorKind::NotFound {
-                log_cli(format!(
-                    "{}: shell extension cache key missing",
-                    scope.name()
-                ));
-                return Ok(0);
-            }
-            return Err(err);
-        }
-    };
-
-    let clsid_upper = clsid.to_ascii_uppercase();
-    let clsid_nobrace = clsid_upper.trim_matches('{').trim_matches('}').to_string();
-    let mut to_delete = Vec::new();
-    for value in key.enum_values() {
-        if let Ok((name, _)) = value {
-            let upper = name.to_ascii_uppercase();
-            if upper.contains(&clsid_upper) || upper.contains(&clsid_nobrace) {
-                to_delete.push(name);
-            }
-        }
-    }
-
-    let mut removed = 0usize;
-    for name in to_delete {
-        if key.delete_value(&name).is_ok() {
-            removed += 1;
-        }
-    }
-    if removed > 0 {
-        log_cli(format!(
-            r"{}: cleared {} entries from Shell Extensions\Cached",
-            scope.name(),
-            removed
-        ));
-    } else {
-        log_cli(format!(
-            "{}: no cached Shell Extensions entries to clear",
-            scope.name()
-        ));
-    }
-    Ok(removed)
-}
-
-fn enforce_thumbnail_settings_scope(scope: RegistryScope) -> io::Result<()> {
-    log_cli(format!(
-        "{}: enforcing Explorer thumbnail settings",
-        scope.name()
-    ));
-    let root = scope.root();
-
-    let (advanced, _) =
-        root.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced")?;
-    advanced.set_value("IconsOnly", &0u32)?;
-    advanced.set_value("DisableThumbnails", &0u32)?;
-    advanced.set_value("DisableThumbnailCache", &0u32)?;
-    advanced.set_value("DisableThumbnailsOnNetworkFolders", &0u32)?;
-
-    const POLICY_PATHS: [&str; 2] = [
-        r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
-        r"Software\Policies\Microsoft\Windows\Explorer",
-    ];
-    const POLICY_VALUES: [&str; 3] = [
-        "DisableThumbnails",
-        "DisableThumbnailCache",
-        "DisableThumbnailsOnNetworkFolders",
-    ];
-
-    for path in POLICY_PATHS {
-        if let Ok((key, _)) = root.create_subkey(path) {
-            for name in POLICY_VALUES {
-                key.set_value(name, &0u32)?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn toggle_logging() -> io::Result<()> {
     let currently_enabled = log_endabled();
     let target = !currently_enabled;
@@ -188,15 +102,6 @@ fn toggle_logging() -> io::Result<()> {
     ));
     println!("Logging {}.", if target { "enabled" } else { "disabled" });
     Ok(())
-}
-
-fn normalize_ext(raw: &str) -> String {
-    let s = raw.trim();
-    if s.starts_with('.') {
-        s.to_string()
-    } else {
-        format!(".{}", s)
-    }
 }
 
 fn current_progid_of_ext(ext: &str) -> Option<String> {
@@ -286,53 +191,6 @@ fn user_choice_prog_id(hkcu: &RegKey, ext: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn bind_application(hkcu: &RegKey, entry: &str, catid: &str, clsid: &str) -> io::Result<()> {
-    let entry = entry.trim();
-    if entry.is_empty() {
-        return Ok(());
-    }
-
-    // If entry is already a ProgID, reuse helper
-    if !entry.ends_with(".exe") {
-        return bind_prog_id_application(hkcu, entry, catid, clsid);
-    }
-
-    let key_path = format!(r"Software\Classes\Applications\{}\ShellEx", entry);
-    log_cli(format!(
-        "Register COM: binding under application {} (ShellEx)",
-        entry
-    ));
-    let (app_shellex, _) = hkcu.create_subkey(key_path)?;
-    let (app_thumb, _) = app_shellex.create_subkey(catid)?;
-    app_thumb.set_value("", &clsid)?;
-    Ok(())
-}
-
-fn bind_prog_id_application(
-    hkcu: &RegKey,
-    progid: &str,
-    catid: &str,
-    clsid: &str,
-) -> io::Result<()> {
-    let progid = progid.trim();
-    if progid.is_empty() {
-        return Ok(());
-    }
-
-    if let Some(app) = progid.strip_prefix(r"Applications\") {
-        return bind_application(hkcu, app, catid, clsid);
-    }
-
-    log_cli(format!(
-        "Register COM: binding under ProgID application {}",
-        progid
-    ));
-    let (app_shellex, _) = hkcu.create_subkey(format!(r"Software\Classes\{}\ShellEx", progid))?;
-    let (app_thumb, _) = app_shellex.create_subkey(catid)?;
-    app_thumb.set_value("", &clsid)?;
-    Ok(())
-}
-
 fn remove_application_binding(hkcu: &RegKey, entry: &str, catid: &str) {
     let entry = entry.trim();
     if entry.is_empty() {
@@ -369,14 +227,4 @@ fn remove_prog_id_application(hkcu: &RegKey, progid: &str, catid: &str) {
         progid
     ));
     let _ = hkcu.delete_subkey_all(path);
-}
-
-fn notify_shell_assoc(reason: &str) {
-    log_cli(format!(
-        "Shell notify ({reason}): calling SHChangeNotify(SHCNE_ASSOCCHANGED)"
-    ));
-    unsafe {
-        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
-    }
-    log_cli("Shell notify: done");
 }

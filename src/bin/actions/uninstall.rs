@@ -1,7 +1,8 @@
+use crate::utils::normalize_ext::normalize_ext;
+use crate::utils::notify_shell_assoc::notify_shell_assoc;
 use crate::{
-    RegistryScope, current_progid_of_ext, normalize_ext, notify_shell_assoc,
-    open_with_list_entries, open_with_progids_entries, remove_application_binding,
-    remove_prog_id_application, user_choice_prog_id,
+    RegistryScope, current_progid_of_ext, open_with_list_entries, open_with_progids_entries,
+    remove_application_binding, remove_prog_id_application, user_choice_prog_id,
 };
 use blp_thumb_win::keys::{
     DEFAULT_EXT, DEFAULT_PROGID, clsid_str, preview_clsid_str, shell_preview_handler_catid_str,
@@ -28,7 +29,7 @@ fn unregister_com_scope(scope: RegistryScope) -> io::Result<()> {
     let thumb_catid = shell_thumb_handler_catid_str();
     let preview_clsid = preview_clsid_str();
     let preview_catid = shell_preview_handler_catid_str();
-    let ext = normalize_ext(DEFAULT_EXT);
+    let ext = DEFAULT_EXT;
 
     let classes = [
         (&thumb_clsid, &thumb_catid),

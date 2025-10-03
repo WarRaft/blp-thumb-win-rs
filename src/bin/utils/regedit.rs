@@ -28,3 +28,12 @@ pub fn set_reg_value<N: AsRef<OsStr>, T: ToRegValue>(
     subkey.set_value(value_name, value)?;
     Ok(())
 }
+
+/// Create (or open) a registry subkey and return the opened `RegKey`.
+/// This mirrors `RegKey::create_subkey` but centralizes logging and keeps
+/// call-sites concise in installer code.
+pub fn create_subkey(root: &RegKey, subkey_path: &str) -> io::Result<RegKey> {
+    log_cli(format!("Creating/opening registry key: {}", subkey_path));
+    let (subkey, _) = root.create_subkey(subkey_path)?;
+    Ok(subkey)
+}
