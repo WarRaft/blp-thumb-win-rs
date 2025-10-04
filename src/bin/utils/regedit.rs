@@ -1,8 +1,8 @@
-use std::io;
+use blp_thumb_win::log::log_ui;
 use std::ffi::OsStr;
+use std::io;
 use winreg::RegKey;
 use winreg::types::ToRegValue;
-use blp_thumb_win::log::log_cli;
 
 /// Convenience helper: create (or open) a subkey under `root` and set a value,
 /// logging the exact registry path and value written.
@@ -17,11 +17,14 @@ pub fn set_reg_value<N: AsRef<OsStr>, T: ToRegValue>(
     value_name: N,
     value: &T,
 ) -> io::Result<()> {
-    log_cli(format!("Creating/opening registry key: {}", subkey_path));
+    log_ui(format!("Creating/opening registry key: {}", subkey_path));
     let (subkey, _) = root.create_subkey(subkey_path)?;
-    // Log the value being set. For the default value name write `(Default)`.
-    let name_display = if value_name.as_ref().is_empty() { "(Default)" } else { "value" };
-    log_cli(format!(
+    let name_display = if value_name.as_ref().is_empty() {
+        "(Default)"
+    } else {
+        "value"
+    };
+    log_ui(format!(
         "Setting value: {} \\\\ {} = <written>",
         subkey_path, name_display
     ));
@@ -33,7 +36,7 @@ pub fn set_reg_value<N: AsRef<OsStr>, T: ToRegValue>(
 /// This mirrors `RegKey::create_subkey` but centralizes logging and keeps
 /// call-sites concise in installer code.
 pub fn create_subkey(root: &RegKey, subkey_path: &str) -> io::Result<RegKey> {
-    log_cli(format!("Creating/opening registry key: {}", subkey_path));
+    log_ui(format!("Creating/opening registry key: {}", subkey_path));
     let (subkey, _) = root.create_subkey(subkey_path)?;
     Ok(subkey)
 }

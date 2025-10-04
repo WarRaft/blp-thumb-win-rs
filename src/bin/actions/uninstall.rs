@@ -1,8 +1,7 @@
-use crate::utils::normalize_ext::normalize_ext;
 use crate::utils::notify_shell_assoc::notify_shell_assoc;
 use crate::{
-    RegistryScope, current_progid_of_ext, open_with_list_entries, open_with_progids_entries,
-    remove_application_binding, remove_prog_id_application, user_choice_prog_id,
+    RegistryScope, open_with_list_entries, open_with_progids_entries, remove_application_binding,
+    remove_prog_id_application, user_choice_prog_id,
 };
 use blp_thumb_win::keys::{
     DEFAULT_EXT, DEFAULT_PROGID, clsid_str, preview_clsid_str, shell_preview_handler_catid_str,
@@ -10,7 +9,8 @@ use blp_thumb_win::keys::{
 };
 use blp_thumb_win::log::log_cli;
 use std::io;
-use winreg::enums::KEY_SET_VALUE;
+use winreg::RegKey;
+use winreg::enums::{HKEY_CLASSES_ROOT, KEY_SET_VALUE};
 
 pub fn uninstall() -> io::Result<()> {
     log_cli("Uninstall (all users): start");
@@ -152,4 +152,12 @@ fn unregister_com_scope(scope: RegistryScope) -> io::Result<()> {
         });
     log_cli(format!("Unregister COM [{}]: completed", scope_name));
     Ok(())
+}
+
+fn current_progid_of_ext(ext: &str) -> Option<String> {
+    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
+    hkcr.open_subkey(ext)
+        .ok()
+        .and_then(|k| k.get_value::<String, _>("").ok())
+        .filter(|s| !s.trim().is_empty())
 }

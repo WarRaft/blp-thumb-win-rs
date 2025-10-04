@@ -7,7 +7,7 @@ use blp_thumb_win::keys::{
     DEFAULT_EXT, FRIENDLY_NAME, clsid_str, preview_clsid_str, shell_preview_handler_catid_str,
     shell_thumb_handler_catid_str,
 };
-use blp_thumb_win::log::log_cli;
+use blp_thumb_win::log::{log_cli, log_ui};
 use std::path::{Path, PathBuf};
 use std::{env, fs, io};
 use winreg::RegKey;
@@ -16,23 +16,53 @@ use winreg::enums::{KEY_READ, KEY_SET_VALUE};
 use crate::utils::regedit::{create_subkey, set_reg_value};
 
 pub fn install() -> io::Result<()> {
-    // Call the real installer which uses `?` for errors, and log any error here.
     if let Err(err) = install_inner() {
-        log_cli(format!("Install failed: {}", err));
-        return Err(err);
+        log_ui(format!("Install failed: {}", err));
     }
     Ok(())
 }
 
-// Private implementation that contains the actual installation logic and returns
-// errors via `?` so the public wrapper can handle/log them.
 fn install_inner() -> io::Result<()> {
+    use std::path::PathBuf;
+    use std::{env, fs};
+
     log_cli("Install (all users): start");
-    let dll_path = materialize_embedded_dll()?;
+
+    // === inlined materialize_embedded_dll ===================================
+    let dll_path: PathBuf = {
+        let base = env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Users\Default\AppData\Local"));
+
+        let dir = base.join("blp-thumb-win");
+        fs::create_dir_all(&dir).map_err(|e| {
+            log_ui(format!("Failed to create dir {}: {}", dir.display(), e));
+            e
+        })?;
+
+        let path = dir.join("blp_thumb_win.dll");
+        log_ui(format!(
+            "Writing DLL {} ({} bytes)",
+            path.display(),
+            DLL_BYTES.len()
+        ));
+
+        fs::write(&path, DLL_BYTES).map_err(|e| {
+            log_ui(format!("Failed to write DLL {}: {}", path.display(), e));
+            e
+        })?;
+
+        log_ui("DLL materialized");
+        path
+    };
+
+    // ========================================================================
+
     log_cli(format!(
         "Install (all users): DLL materialized to {}",
         dll_path.display()
     ));
+
     let mut warnings = Vec::new();
     if let Err(err) = register_com_scope(RegistryScope::LocalMachine, &dll_path) {
         warnings.push(format!("HKLM registration failed: {}", err));
@@ -77,43 +107,6 @@ fn install_inner() -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-fn materialize_embedded_dll() -> io::Result<PathBuf> {
-    let base = env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\\Users\\Default\\AppData\\Local"));
-
-    log_cli(format!(
-        "Materialize DLL: base directory {}",
-        base.display()
-    ));
-
-    let dir = base.join("blp-thumb-win");
-    log_cli(format!(
-        "Materialize DLL: ensuring directory {}",
-        dir.display()
-    ));
-
-    fs::create_dir_all(&dir).map_err(|e| {
-        log_cli(format!("❌ Failed to create dir {}: {}", dir.display(), e));
-        e
-    })?;
-
-    let path = dir.join("blp_thumb_win.dll");
-    log_cli(format!(
-        "Materialize DLL: writing {} ({} bytes)",
-        path.display(),
-        DLL_BYTES.len()
-    ));
-
-    fs::write(&path, DLL_BYTES).map_err(|e| {
-        log_cli(format!("❌ Failed to write DLL {}: {}", path.display(), e));
-        e
-    })?;
-
-    log_cli("Materialize DLL: completed");
-    Ok(path)
 }
 
 /// Register COM classes and shell bindings for this provider.
@@ -210,8 +203,7 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
             "Register COM [{}]: configuring CLSID {}",
             scope_name, clsid
         ));
-        let path_clsid = format!(r"Software\\Classes\\CLSID\\{}", clsid);
-        let key_clsid = create_subkey(&root, &path_clsid)?;
+        let path_clsid = format!(r"Software\Classes\CLSID\{}", clsid);
         set_reg_value(&root, &path_clsid, "", friendly)?;
         set_reg_value(&root, &path_clsid, "DisableProcessIsolation", &1u32)?;
         // Per MS docs: set DisplayName and AppID to help preview host and debugging
@@ -229,9 +221,10 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
                 &blp_thumb_win::keys::APP_ID.to_string(),
             )?;
         }
+        let key_clsid = create_subkey(&root, &path_clsid)?;
         key_clsid.set_value("DisableProcessIsolation", &1u32)?;
 
-        let inproc_path = format!(r"Software\\Classes\\CLSID\\{}\\InprocServer32", clsid);
+        let inproc_path = format!(r"Software\Classes\CLSID\{}\InprocServer32", clsid);
         create_subkey(&root, &inproc_path)?;
         set_reg_value(&root, &inproc_path, "", &dll_path.as_os_str())?;
         // Suggest associating ProgID inside InprocServer32 per docs (helps some hosts)
@@ -259,7 +252,7 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         )?;
 
         let impl_cat_path = format!(
-            "Software\\Classes\\CLSID\\{}\\Implemented Categories\\{}",
+            r"Software\Classes\CLSID\{}\Implemented Categories\{}",
             clsid, catid
         );
         let _ = create_subkey(&root, &impl_cat_path)?;
@@ -269,7 +262,7 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         "Register COM [{}]: ensuring extension metadata",
         scope_name
     ));
-    let ext_path = format!(r"Software\\Classes\\{}", ext);
+    let ext_path = format!(r"Software\Classes\{}", ext);
     let ext_key = create_subkey(&root, &ext_path)?;
     log_cli(format!("Ensuring extension key: {}", ext_path));
     match ext_key.get_value::<String, _>("Content Type") {
@@ -286,7 +279,7 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         }
     }
     log_cli(format!(
-        "Setting value: {}\\PerceivedType = image",
+        r"Setting value: {}\PerceivedType = image",
         ext_path
     ));
     set_reg_value(&root, &ext_path, "PerceivedType", &"image")?;
@@ -312,10 +305,7 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         scope_name,
         blp_thumb_win::keys::DEFAULT_PROGID
     ));
-    let progid_path = format!(
-        r"Software\\Classes\\{}",
-        blp_thumb_win::keys::DEFAULT_PROGID
-    );
+    let progid_path = format!(r"Software\Classes\{}", blp_thumb_win::keys::DEFAULT_PROGID);
     log_cli(format!("Creating ProgID key: {}", progid_path));
     let progid_key = create_subkey(&root, &progid_path)?;
     if progid_key
@@ -325,13 +315,9 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
     {
         set_reg_value(&root, &progid_path, "", &FRIENDLY_NAME)?;
     }
-    create_subkey(&root, &format!("{}\\ShellEx", progid_path))?;
+    create_subkey(&root, &format!(r"{}\ShellEx", progid_path))?;
     for (_, clsid, catid) in &classes {
-        let pid_entry_path = format!(
-            r"{}\\ShellEx\\{}",
-            blp_thumb_win::keys::DEFAULT_PROGID,
-            catid
-        );
+        let pid_entry_path = format!(r"{}\ShellEx\{}", blp_thumb_win::keys::DEFAULT_PROGID, catid);
         create_subkey(&root, &pid_entry_path)?;
         set_reg_value(&root, &pid_entry_path, "", &clsid.as_str())?;
     }
@@ -340,14 +326,14 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         "Register COM [{}]: binding under extension {}",
         scope_name, ext
     ));
-    let key_ext_shellex_path = format!(r"Software\\Classes\\{}\\ShellEx", ext);
+    let key_ext_shellex_path = format!(r"Software\Classes\{}\ShellEx", ext);
     log_cli(format!(
         "Creating extension ShellEx key: {}",
         key_ext_shellex_path
     ));
     create_subkey(&root, &key_ext_shellex_path)?;
     for (_, clsid, catid) in &classes {
-        let entry_path = format!(r"Software\\Classes\\{}\\ShellEx\\{}", ext, catid);
+        let entry_path = format!(r"Software\Classes\{}\ShellEx\{}", ext, catid);
         create_subkey(&root, &entry_path)?;
         set_reg_value(&root, &entry_path, "", &clsid.as_str())?;
     }
@@ -356,10 +342,7 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         "Register COM [{}]: binding under SystemFileAssociations {}",
         scope_name, ext
     ));
-    let key_sys_shellex_path = format!(
-        r"Software\\Classes\\SystemFileAssociations\\{}\\ShellEx",
-        ext
-    );
+    let key_sys_shellex_path = format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx", ext);
     log_cli(format!(
         "Creating SystemFileAssociations ShellEx key: {}",
         key_sys_shellex_path
@@ -367,7 +350,7 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
     create_subkey(&root, &key_sys_shellex_path)?;
     for (_, clsid, catid) in &classes {
         let entry_path = format!(
-            r"Software\\Classes\\SystemFileAssociations\\{}\\ShellEx\\{}",
+            r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
             ext, catid
         );
         create_subkey(&root, &entry_path)?;
@@ -379,14 +362,14 @@ fn register_com_scope(scope: RegistryScope, dll_path: &Path) -> io::Result<()> {
         scope_name
     ));
     let thumb_handlers_path =
-        r"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ThumbnailHandlers";
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers";
     log_cli(format!(
         "Creating ThumbnailHandlers key: {}",
         thumb_handlers_path
     ));
     create_subkey(&root, thumb_handlers_path)?;
     set_reg_value(&root, thumb_handlers_path, &ext, &thumb_clsid)?;
-    let preview_handlers_path = r"Software\\Microsoft\\Windows\\CurrentVersion\\PreviewHandlers";
+    let preview_handlers_path = r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers";
     log_cli(format!(
         "Creating PreviewHandlers key: {}",
         preview_handlers_path

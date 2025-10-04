@@ -104,14 +104,6 @@ fn toggle_logging() -> io::Result<()> {
     Ok(())
 }
 
-fn current_progid_of_ext(ext: &str) -> Option<String> {
-    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
-    hkcr.open_subkey(ext)
-        .ok()
-        .and_then(|k| k.get_value::<String, _>("").ok())
-        .filter(|s| !s.trim().is_empty())
-}
-
 fn pause(msg: &str) {
     print!("{msg}");
     let _ = io::stdout().flush();
