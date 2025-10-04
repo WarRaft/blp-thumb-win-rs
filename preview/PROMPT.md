@@ -1,5 +1,11 @@
 https://t.me/neuralforum/7333097
 
+# Icon
+
+```
+/i Dark aggressive icon: a sharp-edged skull with hollow eyes and nose, giving two thumbs up. Angular, menacing features, cracked bone texture, sharp teeth, grim expression. Eyes glow with eerie red light, faint smoke or haze rising. Bold black outlines, high contrast, subtle gray shading for depth. Aggressive, cursed vibe, not cartoonish. Black background with thick white outline around the whole design, strong sticker/icon style. Optimized for small-scale use, dark gothic energy.
+```
+
 # Logo
 
 ```

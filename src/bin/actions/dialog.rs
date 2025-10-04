@@ -2,12 +2,12 @@ use crate::actiions::clear_cache::clear_cache;
 use crate::actiions::install::install;
 use crate::actiions::restart_explorer::restart_explorer;
 use crate::actiions::uninstall::uninstall;
-use crate::toggle_logging;
 use blp_thumb_win::log::log_endabled;
 use dialoguer::Select;
 use dialoguer::console::{Term, style};
 use dialoguer::theme::ColorfulTheme;
 use std::io;
+use crate::actiions::toggle_logging::toggle_logging;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
