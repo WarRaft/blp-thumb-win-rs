@@ -4,6 +4,10 @@ set -euo pipefail
 # Load settings
 . "$(dirname "$0")/build-settings.sh"
 
+# Reset the human-readable build log for this top-level run
+mkdir -p assets
+: > assets/build-report.txt   # truncate (or create)
+
 echo "==> Ensuring target '${TARGET_TRIPLE}' is installed"
 rustup target add "${TARGET_TRIPLE}" >/dev/null
 
@@ -13,7 +17,7 @@ if [ -d "${BIN_DIR}" ]; then
   rm -rf "${BIN_DIR}"
 fi
 
-# 1) Build LIB (DLL) first
+# 1) Build LIB (DLL) first — no icon embedding here
 echo "==> Building LIB (DLL) only: target=${TARGET_TRIPLE}, profile=${PROFILE}"
 cargo build --target "${TARGET_TRIPLE}" --${PROFILE} --lib
 
@@ -31,9 +35,14 @@ echo "==> Copied DLL to ${BIN_DIR}/$(basename "${DLL_PATH}")"
 # Optional PDB for DLL
 [ -f "${PDB_DLL}" ] && { cp -f "${PDB_DLL}" "${BIN_DIR}/"; echo "==> Copied PDB: $(basename "${PDB_DLL}")"; } || true
 
-# 2) Build installer (it expects DLL in ./bin at compile-time)
+# 2) Build installer (icon embedding happens only now)
 echo "==> Building installer only (embeds ./bin/$(basename "${DLL_PATH}") via include_bytes!)"
-cargo build --target "${TARGET_TRIPLE}" --${PROFILE} --bin "${BIN_NAME}"
+
+# Force build.rs to re-run for the installer phase (single-file trigger)
+printf "phase=installer ts=%s\n" "$(date +%s%N)" >> assets/build-report.txt
+
+# Set env only for the installer build so build.rs knows to embed resources
+BLP_INSTALLER=1 cargo build --target "${TARGET_TRIPLE}" --${PROFILE} --bin "${BIN_NAME}"
 
 # Check EXE
 [ -f "${EXE_PATH}" ] || { echo "ERR: EXE not found after installer build: ${EXE_PATH}"; exit 1; }
