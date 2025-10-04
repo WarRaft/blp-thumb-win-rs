@@ -45,41 +45,11 @@ fn main() -> io::Result<()> {
     }
     Ok(())
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RegistryScope {
-    CurrentUser,
-    LocalMachine,
-}
-
-impl RegistryScope {
-    fn name(self) -> &'static str {
-        match self {
-            RegistryScope::CurrentUser => "HKCU",
-            RegistryScope::LocalMachine => "HKLM",
-        }
-    }
-
-    fn root(self) -> RegKey {
-        match self {
-            RegistryScope::CurrentUser => RegKey::predef(HKEY_CURRENT_USER),
-            RegistryScope::LocalMachine => RegKey::predef(HKEY_LOCAL_MACHINE),
-        }
-    }
-
-    fn is_user(self) -> bool {
-        matches!(self, RegistryScope::CurrentUser)
-    }
-}
-
 fn toggle_logging() -> io::Result<()> {
     let currently_enabled = log_endabled();
     let target = !currently_enabled;
 
-    set_logging_enabled(RegistryScope::CurrentUser, target)?;
-    if let Err(err) = set_logging_enabled(RegistryScope::LocalMachine, target) {
-        log_cli(format!("Logging toggle: HKLM update failed: {}", err));
-    }
+    set_logging_enabled(target)?;
 
     if !target {
         if let Some(path) = blp_thumb_win::log_file_path() {
@@ -112,8 +82,8 @@ fn pause(msg: &str) {
     let _ = io::stdin().read_line(&mut _buf);
 }
 
-fn set_logging_enabled(scope: RegistryScope, enabled: bool) -> io::Result<()> {
-    let root = scope.root();
+fn set_logging_enabled(enabled: bool) -> io::Result<()> {
+    let root = RegKey::predef(HKEY_CURRENT_USER);
     let (key, _) = root.create_subkey(LOG_SETTINGS_SUBKEY)?;
     let value: u32 = if enabled { 1 } else { 0 };
 

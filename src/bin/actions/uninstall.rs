@@ -1,6 +1,6 @@
 use crate::utils::notify_shell_assoc::notify_shell_assoc;
 use crate::{
-    RegistryScope, open_with_list_entries, open_with_progids_entries, remove_application_binding,
+    open_with_list_entries, open_with_progids_entries, remove_application_binding,
     remove_prog_id_application, user_choice_prog_id,
 };
 use blp_thumb_win::keys::{
@@ -14,17 +14,15 @@ use winreg::enums::{HKEY_CLASSES_ROOT, KEY_SET_VALUE};
 
 pub fn uninstall() -> io::Result<()> {
     log_cli("Uninstall (all users): start");
-    unregister_com_scope(RegistryScope::LocalMachine)?;
-    unregister_com_scope(RegistryScope::CurrentUser)?;
+    unregister_com_scope()?;
     notify_shell_assoc("uninstall-all");
     println!("Uninstalled from HKLM and HKCU.");
     Ok(())
 }
 
-fn unregister_com_scope(scope: RegistryScope) -> io::Result<()> {
-    let scope_name = scope.name();
-    log_cli(format!("Unregister COM [{}]: start", scope_name));
-    let root = scope.root();
+fn unregister_com_scope() -> io::Result<()> {
+    log_cli("Unregister start");
+    let root = RegKey::predef(HKEY_CLASSES_ROOT);
     let thumb_clsid = clsid_str();
     let thumb_catid = shell_thumb_handler_catid_str();
     let preview_clsid = preview_clsid_str();
@@ -36,36 +34,23 @@ fn unregister_com_scope(scope: RegistryScope) -> io::Result<()> {
         (&preview_clsid, &preview_catid),
     ];
 
-    if scope.is_user() {
-        if let Some(pid) = current_progid_of_ext(&ext) {
-            log_cli(format!(
-                "Unregister COM [{}]: removing ProgID binding {}",
-                scope_name, pid
-            ));
-            for (_, catid) in &classes {
-                let _ =
-                    root.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", pid, catid));
-            }
-        }
-    } else {
+    if let Some(pid) = current_progid_of_ext(&ext) {
+        log_cli(format!("Unregister COM: removing ProgID binding {}", pid));
         for (_, catid) in &classes {
-            let _ = root.delete_subkey_all(format!(
-                r"Software\Classes\{}\ShellEx\{}",
-                DEFAULT_PROGID, catid
-            ));
+            let _ = root.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", pid, catid));
         }
     }
 
     log_cli(format!(
-        "Unregister COM [{}]: removing extension binding {}",
-        scope_name, ext
+        "Unregister COM: removing extension binding {}",
+        ext
     ));
     for (_, catid) in &classes {
         let _ = root.delete_subkey_all(format!(r"Software\Classes\{}\ShellEx\{}", ext, catid));
     }
     log_cli(format!(
-        "Unregister COM [{}]: removing SystemFileAssociations binding {}",
-        scope_name, ext
+        "Unregister COM: removing SystemFileAssociations binding {}",
+        ext
     ));
     for (_, catid) in &classes {
         let _ = root.delete_subkey_all(format!(
@@ -94,51 +79,39 @@ fn unregister_com_scope(scope: RegistryScope) -> io::Result<()> {
         let _ = ext_key.delete_value("PerceivedType");
     }
 
-    if scope.is_user() {
-        for entry in open_with_list_entries(&root, &ext) {
-            for (_, catid) in &classes {
-                remove_application_binding(&root, &entry, catid);
-            }
-        }
-
-        for progid in open_with_progids_entries(&root, &ext) {
-            for (_, catid) in &classes {
-                remove_prog_id_application(&root, &progid, catid);
-            }
-        }
-
-        if let Some(prog_id) = user_choice_prog_id(&root, &ext) {
-            if let Some(app) = prog_id.strip_prefix(r"Applications\") {
-                for (_, catid) in &classes {
-                    remove_application_binding(&root, app, catid);
-                }
-            } else {
-                for (_, catid) in &classes {
-                    remove_prog_id_application(&root, &prog_id, catid);
-                }
-            }
+    for entry in open_with_list_entries(&root, &ext) {
+        for (_, catid) in &classes {
+            remove_application_binding(&root, &entry, catid);
         }
     }
 
-    log_cli(format!(
-        "Unregister COM [{}]: removing CLSID keys",
-        scope_name
-    ));
+    for progid in open_with_progids_entries(&root, &ext) {
+        for (_, catid) in &classes {
+            remove_prog_id_application(&root, &progid, catid);
+        }
+    }
+
+    if let Some(prog_id) = user_choice_prog_id(&root, &ext) {
+        if let Some(app) = prog_id.strip_prefix(r"Applications\") {
+            for (_, catid) in &classes {
+                remove_application_binding(&root, app, catid);
+            }
+        } else {
+            for (_, catid) in &classes {
+                remove_prog_id_application(&root, &prog_id, catid);
+            }
+        }
+    }
+    log_cli("Unregister COM: removing CLSID keys".to_string());
     for (clsid, _) in &classes {
         let _ = root.delete_subkey_all(format!(r"Software\Classes\CLSID\{}", clsid));
     }
 
-    log_cli(format!(
-        "Unregister COM [{}]: removing extension and ProgID keys",
-        scope_name
-    ));
+    log_cli("Unregister COM: removing extension and ProgID keys".to_string());
     let _ = root.delete_subkey_all(format!(r"Software\Classes\{}", DEFAULT_PROGID));
     let _ = root.delete_subkey_all(format!(r"Software\Classes\{}", ext));
 
-    log_cli(format!(
-        r"Unregister COM [{}]: removing Shell Extensions\Approved entries",
-        scope_name
-    ));
+    log_cli(r"Unregister COM: removing Shell Extensions\Approved entries".to_string());
     let _ = root
         .open_subkey_with_flags(
             r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
@@ -150,7 +123,7 @@ fn unregister_com_scope(scope: RegistryScope) -> io::Result<()> {
             }
             Ok(k)
         });
-    log_cli(format!("Unregister COM [{}]: completed", scope_name));
+    log_cli("Unregister COM: completed".to_string());
     Ok(())
 }
 

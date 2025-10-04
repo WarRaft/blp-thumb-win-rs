@@ -1,42 +1,170 @@
 use blp_thumb_win::log::log_ui;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io;
-use winreg::RegKey;
-use winreg::types::ToRegValue;
+use std::path::Path;
+use winreg::enums::RegType;
+use winreg::types::FromRegValue;
+use winreg::{RegKey, RegValue};
 
-/// Convenience helper: create (or open) a subkey under `root` and set a value,
-/// logging the exact registry path and value written.
-///
-/// - `root`: a `RegKey` returned from `RegKey::predef(HKEY_...)` (HKLM/HKCU)
-/// - `subkey_path`: path under `root` (e.g. "Software\\Classes\\CLSID\\{...}")
-/// - `value_name`: name of the value (use "" for default)
-/// - `value`: any type implementing `ToRegValue` (String, u32, etc.)
-pub fn set_reg_value<N: AsRef<OsStr>, T: ToRegValue>(
-    root: &RegKey,
-    subkey_path: &str,
-    value_name: N,
-    value: &T,
-) -> io::Result<()> {
-    log_ui(format!("Creating/opening registry key: {}", subkey_path));
-    let (subkey, _) = root.create_subkey(subkey_path)?;
-    let name_display = if value_name.as_ref().is_empty() {
-        "(Default)"
-    } else {
-        "value"
-    };
-    log_ui(format!(
-        "Setting value: {} \\\\ {} = <written>",
-        subkey_path, name_display
-    ));
-    subkey.set_value(value_name, value)?;
-    Ok(())
+pub struct Rk<'a> {
+    path: String,
+    key: RegKey,
+    _root: &'a RegKey,
 }
 
-/// Create (or open) a registry subkey and return the opened `RegKey`.
-/// This mirrors `RegKey::create_subkey` but centralizes logging and keeps
-/// call-sites concise in installer code.
-pub fn create_subkey(root: &RegKey, subkey_path: &str) -> io::Result<RegKey> {
-    log_ui(format!("Creating/opening registry key: {}", subkey_path));
-    let (subkey, _) = root.create_subkey(subkey_path)?;
-    Ok(subkey)
+// Полностью owned представление
+pub enum RegVal {
+    Sz(OsString), // REG_SZ
+    Dword(u32),   // REG_DWORD
+    Qword(u64),   // REG_QWORD
+    Bin(Vec<u8>), // REG_BINARY
+}
+
+// Локальный трейт без lifetimes
+pub trait IntoRegVal {
+    fn into_reg_val(self) -> RegVal;
+}
+
+// --- реализации ---
+impl<'a> IntoRegVal for &'a str {
+    #[inline]
+    fn into_reg_val(self) -> RegVal {
+        RegVal::Sz(self.into())
+    }
+}
+impl<'a> IntoRegVal for &'a OsStr {
+    #[inline]
+    fn into_reg_val(self) -> RegVal {
+        RegVal::Sz(self.to_os_string())
+    }
+}
+impl<'a> IntoRegVal for &'a Path {
+    #[inline]
+    fn into_reg_val(self) -> RegVal {
+        RegVal::Sz(self.as_os_str().to_os_string())
+    }
+}
+impl IntoRegVal for String {
+    #[inline]
+    fn into_reg_val(self) -> RegVal {
+        RegVal::Sz(self.into())
+    }
+}
+impl IntoRegVal for OsString {
+    #[inline]
+    fn into_reg_val(self) -> RegVal {
+        RegVal::Sz(self)
+    }
+}
+impl IntoRegVal for u32 {
+    #[inline]
+    fn into_reg_val(self) -> RegVal {
+        RegVal::Dword(self)
+    }
+}
+impl IntoRegVal for u64 {
+    #[inline]
+    fn into_reg_val(self) -> RegVal {
+        RegVal::Qword(self)
+    }
+}
+impl IntoRegVal for bool {
+    #[inline]
+    fn into_reg_val(self) -> RegVal {
+        RegVal::Dword(if self { 1 } else { 0 })
+    }
+}
+impl<'a> IntoRegVal for &'a [u8] {
+    #[inline]
+    fn into_reg_val(self) -> RegVal {
+        RegVal::Bin(self.to_vec())
+    }
+}
+impl IntoRegVal for Vec<u8> {
+    #[inline]
+    fn into_reg_val(self) -> RegVal {
+        RegVal::Bin(self)
+    }
+}
+
+impl<'a> Rk<'a> {
+    #[inline]
+    pub fn open(root: &'a RegKey, path: impl Into<String>) -> io::Result<Self> {
+        let path = path.into();
+        log_ui(format!("Creating/opening registry key: {}", &path));
+        let (key, _) = root.create_subkey(&path)?;
+        Ok(Self {
+            path,
+            key,
+            _root: root,
+        })
+    }
+
+    #[inline]
+    pub fn sub(&self, suffix: &str) -> io::Result<Rk<'a>> {
+        let full = if suffix.is_empty() {
+            self.path.clone()
+        } else {
+            format!(r"{}\{}", self.path, suffix)
+        };
+        log_ui(format!("Creating/opening registry key: {}", &full));
+        let (k, _) = self.key.create_subkey(suffix)?;
+        Ok(Rk {
+            path: full,
+            key: k,
+            _root: self._root,
+        })
+    }
+
+    // НИКАКИХ HRTB: V: IntoRegVal
+    #[inline]
+    pub fn set<V: IntoRegVal>(&self, name: &str, value: V) -> io::Result<()> {
+        let name_disp = if name.is_empty() { "(Default)" } else { name };
+        match value.into_reg_val() {
+            RegVal::Sz(os) => {
+                log_ui(format!(
+                    "Setting value: {} \\ {} = REG_SZ",
+                    self.path, name_disp
+                ));
+                self.key.set_value(name, &os)
+            }
+            RegVal::Dword(d) => {
+                log_ui(format!(
+                    "Setting value: {} \\ {} = REG_DWORD",
+                    self.path, name_disp
+                ));
+                self.key.set_value(name, &d)
+            }
+            RegVal::Qword(q) => {
+                log_ui(format!(
+                    "Setting value: {} \\ {} = REG_QWORD",
+                    self.path, name_disp
+                ));
+                self.key.set_value(name, &q)
+            }
+            RegVal::Bin(bytes) => {
+                log_ui(format!(
+                    "Setting value: {} \\ {} = REG_BINARY ({} bytes)",
+                    self.path,
+                    name_disp,
+                    bytes.len()
+                ));
+                let rv = RegValue {
+                    vtype: RegType::REG_BINARY,
+                    bytes,
+                };
+                self.key.set_raw_value(name, &rv)
+            }
+        }
+    }
+
+    #[inline]
+    pub fn set_default<V: IntoRegVal>(&self, value: V) -> io::Result<()> {
+        self.set("", value)
+    }
+
+    #[inline]
+    pub fn get<T: FromRegValue>(&self, name: &str) -> io::Result<T> {
+        self.key.get_value(name)
+    }
 }
