@@ -8,7 +8,7 @@ use winreg::{RegKey, RegValue};
 
 pub struct Rk<'a> {
     path: String,
-    key: RegKey,
+    pub key: RegKey,
     _root: &'a RegKey,
 }
 

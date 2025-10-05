@@ -27,6 +27,7 @@ Only our own ProgID / extension / CLSIDs and Explorer handler lists are touched.
 References:
 - Thumbnail providers: https://learn.microsoft.com/windows/win32/shell/thumbnail-providers
 - Preview handlers:   https://learn.microsoft.com/windows/win32/shell/preview-handlers
+- Registration:       https://learn.microsoft.com/windows/win32/shell/how-to-register-a-preview-handler
 
 Registry layout (ASCII):
 
@@ -45,7 +46,7 @@ HKCU
    │  └─ CLSID
    │     ├─ {CLSID_BLP_THUMB}
    │     │  (Default)     = BLP Thumbnail Provider
-   │     │  DisableProcessIsolation = 1 (DWORD)
+   │     │  DisableProcessIsolation = 1 (DWORD)        ; thumbnail only
    │     │  └─ InprocServer32
    │     │     (Default)  = %LOCALAPPDATA%\blp-thumb-win\blp_thumb_win.dll
    │     │     ThreadingModel = Apartment
@@ -53,14 +54,12 @@ HKCU
    │     │     └─ {E357FCCD-A995-4576-B01F-234630154E96}
    │     └─ {CLSID_BLP_PREVIEW}
    │        (Default)     = BLP Preview Handler
-   │        DisplayName   = @<dll_path> (optional; helps diagnostics)
-   │        AppID         = {534A1E02-D58F-44f0-B58B-36CBED287C7C} (optional; prevhost)
-   │        DisableProcessIsolation = 1 (DWORD)
+   │        DisplayName   = @<dll_path>                ; optional, helps diagnostics
    │        └─ InprocServer32
    │           (Default)  = %LOCALAPPDATA%\blp-thumb-win\blp_thumb_win.dll
    │           ThreadingModel = Apartment
-   │           ProgID     = WarRaft.BLP
-   │           VersionIndependentProgID = WarRaft.BLP
+   │           ProgID     = WarRaft.BLP                ; optional but helpful
+   │           VersionIndependentProgID = WarRaft.BLP  ; optional but helpful
    │        └─ Implemented Categories
    │           └─ {8895B1C6-B41F-4C1C-A562-0D564250836F}
    └─ Microsoft\Windows\CurrentVersion
@@ -71,7 +70,8 @@ HKCU
 
 Notes:
 - We target per-user install only (HKCU). No HKLM writes are performed.
-- AppID is optional; it helps Windows host preview handlers in Prevhost.
+- For Preview Handlers we DO NOT set DisableProcessIsolation or AppID.
+  The shell hosts them out-of-process in prevhost.exe automatically.
 ============================================================================ */
 pub fn install() -> io::Result<()> {
     if let Err(err) = install_inner() {
@@ -124,13 +124,13 @@ fn install_inner() -> io::Result<()> {
     {
         let root = RegKey::predef(HKEY_CURRENT_USER);
 
-        let thumb_clsid = clsid_str(); // CLSID for Thumbnail provider
+        let thumb_clsid = clsid_str(); // CLSID (thumbnail)
         let thumb_catid = shell_thumb_handler_catid_str(); // {E357FCCD-A995-4576-B01F-234630154E96}
-        let preview_clsid = preview_clsid_str(); // CLSID for Preview handler
+        let preview_clsid = preview_clsid_str(); // CLSID (preview)
         let preview_catid = shell_preview_handler_catid_str(); // {8895B1C6-B41F-4C1C-A562-0D564250836F}
         let ext = DEFAULT_EXT; // ".blp"
 
-        // (friendly name, clsid, catid, is_preview)
+        // (friendly, clsid, catid, is_preview)
         let classes = [
             (FRIENDLY_NAME, &thumb_clsid, &thumb_catid, false),
             (
@@ -153,21 +153,32 @@ fn install_inner() -> io::Result<()> {
 
             // HKCU\Software\Classes\CLSID\{CLSID}
             let clsid_key = Rk::open(&root, format!(r"Software\Classes\CLSID\{}", clsid))?;
-            clsid_key.set_default(*friendly)?; // REG_SZ
-            clsid_key.set("DisableProcessIsolation", 1u32)?; // REG_DWORD = 1
+            clsid_key.set_default(*friendly)?;
 
+            // Thumbnail: keep DisableProcessIsolation = 1
+            // Preview  : DO NOT set it (and remove if left from older installs)
             if *is_preview {
-                // Optional metadata that improves hosting/diagnostics.
+                let _ = clsid_key.get::<u32>("DisableProcessIsolation").ok();
+                let _ = clsid_key
+                    .sub("") // no-op to use same helper
+                    .and(Ok(()));
+                let _ = clsid_key.key.delete_value("DisableProcessIsolation");
+            } else {
+                clsid_key.set("DisableProcessIsolation", 1u32)?;
+            }
+
+            // For preview: don't set AppID. If it exists from an older version, remove it.
+            if *is_preview {
+                let _ = clsid_key.key.delete_value("AppID");
                 clsid_key.set("DisplayName", format!("@{}", dll_path.display()))?;
-                clsid_key.set("AppID", blp_thumb_win::keys::APP_ID.to_string())?;
             }
 
             // HKCU\Software\Classes\CLSID\{CLSID}\InprocServer32
             let inproc = clsid_key.sub(r"InprocServer32")?;
-            inproc.set_default(dll_path.as_os_str())?; // full path to the DLL
+            inproc.set_default(dll_path.as_os_str())?;
             inproc.set("ThreadingModel", "Apartment")?;
             if *is_preview {
-                // These do not change "Open with..." association; they help hosts.
+                // Optional, helps some hosts; does NOT hijack user's OpenWith choice.
                 inproc.set("ProgID", blp_thumb_win::keys::DEFAULT_PROGID.to_string())?;
                 inproc.set(
                     "VersionIndependentProgID",
@@ -182,8 +193,7 @@ fn install_inner() -> io::Result<()> {
             approved.set(clsid.as_str(), *friendly)?;
         }
 
-        // 2.2) File extension metadata for ".blp"
-        //      We set Default only if it's currently empty to avoid hijacking.
+        // 2.2) File extension metadata for ".blp" (Default only if currently empty)
         let ext_key = Rk::open(&root, format!(r"Software\Classes\{}", ext))?;
         match ext_key.get::<String>("Content Type") {
             Ok(existing)
