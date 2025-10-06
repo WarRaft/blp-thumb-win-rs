@@ -3,7 +3,7 @@ use crate::actiions::install::install;
 use crate::actiions::restart_explorer::restart_explorer;
 use crate::actiions::toggle_logging::toggle_logging;
 use crate::actiions::uninstall::uninstall;
-use blp_thumb_win::log::log_endabled;
+use blp_thumb_win::log::log_enabled;
 use dialoguer::Select;
 use dialoguer::console::{Term, style};
 use dialoguer::theme::ColorfulTheme;
@@ -47,7 +47,7 @@ pub fn action_choose() -> io::Result<(Action, String)> {
         "Clear thumbnail cache".into(),
     ];
 
-    let logging_enabled = log_endabled();
+    let logging_enabled = log_enabled();
     actions.push(Action::ToggleLogging);
     labels.push(
         if logging_enabled {

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::{env, fs, io};
 
-use blp_thumb_win::log::log_ui;
+use blp_thumb_win::log::log;
 
 use blp_thumb_win::utils::guid::GuidExt;
 use blp_thumb_win::{CLSID_BLP_PREVIEW, CLSID_BLP_THUMB};
@@ -12,7 +12,7 @@ use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
 /// This mirrors the install/install_inner pattern.
 pub fn clear_cache() -> io::Result<()> {
     if let Err(err) = clear_cache_inner() {
-        log_ui(format!("Clear cache failed: {}", err));
+        log(format!("Clear cache failed: {}", err));
     }
     Ok(())
 }
@@ -21,7 +21,7 @@ pub fn clear_cache() -> io::Result<()> {
 /// 1) HKCU Shell Extensions cached values containing our CLSIDs
 /// 2) On-disk Explorer thumbnail cache files under %LOCALAPPDATA%\Microsoft\Windows\Explorer
 fn clear_cache_inner() -> io::Result<()> {
-    log_ui("Clear cache: start");
+    log("Clear cache: start");
 
     // -------------------------------------------------------------------------
     // 1) Registry cache: HKCU\Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Cached
@@ -34,7 +34,10 @@ fn clear_cache_inner() -> io::Result<()> {
         let path = r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Cached";
         match root.open_subkey_with_flags(path, KEY_READ | KEY_SET_VALUE) {
             Ok(key) => {
-                let clsids = [CLSID_BLP_THUMB.to_braced_upper(), CLSID_BLP_PREVIEW.to_braced_upper()];
+                let clsids = [
+                    CLSID_BLP_THUMB.to_braced_upper(),
+                    CLSID_BLP_PREVIEW.to_braced_upper(),
+                ];
                 let mut total_removed = 0usize;
 
                 for clsid in clsids {
@@ -61,19 +64,19 @@ fn clear_cache_inner() -> io::Result<()> {
                     }
                     total_removed += removed;
 
-                    log_ui(format!(
+                    log(format!(
                         "HKCU: removed {} cached entries for {}",
                         removed, clsid
                     ));
                 }
 
                 if total_removed == 0 {
-                    log_ui("HKCU: Shell Extensions\\Cached had no matching entries");
+                    log("HKCU: Shell Extensions\\Cached had no matching entries");
                 }
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 // Cache key may not exist on a fresh profile — that's fine.
-                log_ui("HKCU: shell extension cache key missing");
+                log("HKCU: shell extension cache key missing");
             }
             Err(err) => {
                 // Surface the error to the caller so the wrapper can log and proceed.
@@ -90,14 +93,14 @@ fn clear_cache_inner() -> io::Result<()> {
     // -------------------------------------------------------------------------
     {
         let Some(local) = env::var_os("LOCALAPPDATA") else {
-            log_ui("Clear cache: LOCALAPPDATA is not set");
+            log("Clear cache: LOCALAPPDATA is not set");
             // Not an error for our purposes — nothing to clear on disk.
             return Ok(());
         };
 
         let dir = PathBuf::from(local).join(r"Microsoft\Windows\Explorer");
         if !dir.is_dir() {
-            log_ui(format!(
+            log(format!(
                 "Clear cache: directory {} not found",
                 dir.display()
             ));
@@ -108,14 +111,24 @@ fn clear_cache_inner() -> io::Result<()> {
                 if path.is_file() {
                     if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
                         if name.starts_with("thumbcache_") {
-                            // Best-effort: ignore individual file errors, keep going.
-                            let _ = fs::remove_file(&path);
-                            removed += 1;
+                            match fs::remove_file(&path) {
+                                Ok(()) => {
+                                    log(format!("Clear cache: removed {}", path.display()));
+                                    removed += 1;
+                                }
+                                Err(e) => {
+                                    log(format!(
+                                        "Clear cache: failed to remove {}: {}",
+                                        path.display(),
+                                        e
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
             }
-            log_ui(format!(
+            log(format!(
                 "Clear cache: removed {} files from {}",
                 removed,
                 dir.display()
@@ -123,6 +136,6 @@ fn clear_cache_inner() -> io::Result<()> {
         }
     }
 
-    log_ui("Clear cache: done");
+    log("Clear cache: done");
     Ok(())
 }

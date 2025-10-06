@@ -1,5 +1,6 @@
 #![cfg(windows)]
 
+use blp_thumb_win::log::log;
 use std::{env, io, io::Write};
 
 // Embedded DLL that you copy into ./bin/ at build time.
@@ -10,8 +11,7 @@ static DLL_BYTES: &[u8] = include_bytes!(concat!(
 ));
 
 // Single source of truth from the library (your keys module)
-use crate::actiions::dialog::{action_choose, action_execute, Action};
-use blp_thumb_win::log::log_cli;
+use crate::actiions::dialog::{Action, action_choose, action_execute};
 
 #[path = "actions/mod.rs"]
 mod actiions;
@@ -20,20 +20,20 @@ mod actiions;
 mod utils;
 
 fn main() -> io::Result<()> {
-    log_cli("Installer started");
+    log("Installer started");
     loop {
         let (action, label) = action_choose()?;
-        log_cli(format!("Menu selection: {}", label));
+        log(format!("Menu selection: {}", label));
 
         if action == Action::Exit {
-            log_cli("Installer exiting");
+            log("Installer exiting");
             break;
         }
 
         match action_execute(action) {
-            Ok(()) => log_cli(format!("Action '{}' completed successfully", label)),
+            Ok(()) => log(format!("Action '{}' completed successfully", label)),
             Err(err) => {
-                log_cli(format!("Action '{}' failed: {}", label, err));
+                log(format!("Action '{}' failed: {}", label, err));
                 return Err(err);
             }
         }
@@ -42,7 +42,6 @@ fn main() -> io::Result<()> {
     }
     Ok(())
 }
-
 
 fn pause(msg: &str) {
     print!("{msg}");

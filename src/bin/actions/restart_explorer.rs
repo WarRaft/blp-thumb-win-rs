@@ -1,5 +1,4 @@
-use crate::log_cli;
-use blp_thumb_win::log::log_ui;
+use blp_thumb_win::log::log;
 use std::io;
 use std::process::{Command, Stdio};
 use std::thread::sleep;
@@ -13,7 +12,7 @@ fn count_explorer_processes() -> io::Result<usize> {
         .output()?;
 
     if !output.status.success() {
-        log_cli("Restart Explorer: tasklist returned non-zero status; assuming 0 processes");
+        log("Restart Explorer: tasklist returned non-zero status; assuming 0 processes");
         return Ok(0);
     }
 
@@ -26,10 +25,10 @@ fn count_explorer_processes() -> io::Result<usize> {
 }
 
 pub fn restart_explorer() -> io::Result<()> {
-    log_ui("Restart Explorer: begin");
+    log("Restart Explorer: begin");
 
     let before = count_explorer_processes().unwrap_or(0);
-    log_ui(format!(
+    log(format!(
         "Restart Explorer: explorer.exe running before kill: {before}"
     ));
 
@@ -41,12 +40,12 @@ pub fn restart_explorer() -> io::Result<()> {
         .status();
 
     match kill_status {
-        Ok(status) if status.success() => log_ui("Restart Explorer: taskkill exited successfully"),
-        Ok(status) => log_ui(format!(
+        Ok(status) if status.success() => log("Restart Explorer: taskkill exited successfully"),
+        Ok(status) => log(format!(
             "Restart Explorer: taskkill exit code {:?} (Explorer may already be stopped)",
             status.code()
         )),
-        Err(err) => log_ui(format!(
+        Err(err) => log(format!(
             "Restart Explorer: taskkill failed ({err}); proceeding to launch"
         )),
     }
@@ -54,11 +53,11 @@ pub fn restart_explorer() -> io::Result<()> {
     sleep(Duration::from_millis(400));
 
     let after_kill = count_explorer_processes().unwrap_or(0);
-    log_ui(format!(
+    log(format!(
         "Restart Explorer: explorer.exe count after kill wait: {after_kill}"
     ));
 
-    log_ui("Restart Explorer: launching explorer.exe (spawn)");
+    log("Restart Explorer: launching explorer.exe (spawn)");
     match Command::new("explorer.exe")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -66,11 +65,11 @@ pub fn restart_explorer() -> io::Result<()> {
         .spawn()
     {
         Ok(child) => {
-            log_ui("Restart Explorer: explorer.exe spawned successfully");
+            log("Restart Explorer: explorer.exe spawned successfully");
             drop(child);
         }
         Err(err) => {
-            log_ui(format!(
+            log(format!(
                 "Restart Explorer: direct spawn failed ({err}); attempting via cmd /C start"
             ));
 
@@ -81,22 +80,21 @@ pub fn restart_explorer() -> io::Result<()> {
                 .stderr(Stdio::null())
                 .status()
                 .map_err(|start_err| {
-                    log_ui(format!(
+                    log(format!(
                         "Restart Explorer: fallback start failed: {start_err}"
                     ));
                     start_err
                 })?;
-            log_ui("Restart Explorer: explorer.exe launched via cmd");
+            log("Restart Explorer: explorer.exe launched via cmd");
         }
     }
 
     sleep(Duration::from_millis(250));
     let after_launch = count_explorer_processes().unwrap_or(0);
-    log_ui(format!(
+    log(format!(
         "Restart Explorer: explorer.exe count after launch: {after_launch}"
     ));
 
-    println!("Explorer restarted.");
-    log_cli("Restart Explorer: completed");
+    log("Restart Explorer: completed");
     Ok(())
 }

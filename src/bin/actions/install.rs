@@ -1,203 +1,259 @@
 use crate::DLL_BYTES;
 use crate::utils::notify_shell_assoc::notify_shell_assoc;
 use crate::utils::regedit::Rk;
-use blp_thumb_win::log::log_ui;
+use blp_thumb_win::log::log;
 use blp_thumb_win::utils::guid::GuidExt;
 use blp_thumb_win::{
     CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME,
-    PREVHOST_APPID_X64, PREVIEW_FRIENDLY_NAME, SHELL_PREVIEW_HANDLER_CATID,
-    SHELL_THUMB_HANDLER_CATID,
+    PREVIEW_FRIENDLY_NAME, SHELL_PREVIEW_HANDLER_CATID, SHELL_THUMB_HANDLER_CATID,
 };
 use std::path::PathBuf;
 use std::{env, fs, io};
 use winreg::RegKey;
-use winreg::enums::HKEY_CURRENT_USER;
+use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
 
-/* ============================================================================
-Per-user (HKCU) registration of COM thumbnail & preview handlers for the BLP format.
-
-No regsvr32, no System32 — we write only HKCU keys needed for Explorer to load:
-- Thumbnail provider (IThumbnailProvider) is in-proc.
-- Preview handler (IPreviewHandler) is hosted by prevhost via AppID mapping.
-- We also bind a PersistentHandler to force Explorer to route preview through us
-  even when PerceivedType=image might prefer a built-in handler.
-
-Docs:
-  - Thumbnail providers: https://learn.microsoft.com/windows/win32/shell/thumbnail-providers
-  - Preview handlers:   https://learn.microsoft.com/windows/win32/shell/preview-handlers
-  - Persistent handlers: https://learn.microsoft.com/windows/win32/shell/handlers
-
-Effective registry (under HKCU):
-
-Software
-└─ Classes
-   ├─ .blp
-   │  (Default)        = WarRaft.BLP               ; only if empty
-   │  Content Type     = image/x-blp
-   │  PerceivedType    = image
-   │  └─ PersistentHandler → {CLSID_BLP_PREVIEW}   ; forces preview lookup via PH
-   ├─ WarRaft.BLP                                   ; our ProgID
-   │  (Default)        = BLP Thumbnail/Preview Provider
-   │  └─ ShellEx
-   │     ├─ {E357FCCD-A995-4576-B01F-234630154E96}  = {CLSID_BLP_THUMB}
-   │     └─ {8895B1C6-B41F-4C1C-A562-0D564250836F}  = {CLSID_BLP_PREVIEW}
-   └─ CLSID
-      ├─ {CLSID_BLP_THUMB}
-      │  (Default)     = BLP Thumbnail Provider
-      │  DisableProcessIsolation = 1 (DWORD)
-      │  └─ InprocServer32 → @=<dll>, ThreadingModel="Apartment"
-      │  └─ Implemented Categories\{E357FCCD-...}
-      └─ {CLSID_BLP_PREVIEW}
-         (Default)     = BLP Preview Handler
-         DisplayName   = @<dll>
-         AppID         = {6D2B5079-2F0B-48DD-AB7F-97CEC514D30B}   ; x64 prevhost.exe host AppID
-         DisableProcessIsolation = 1 (DWORD)
-         └─ InprocServer32 → @=<dll>, ThreadingModel="Apartment"
-         └─ Implemented Categories\{8895B1C6-...}
-         └─ PersistentAddinsRegistered\{8895B1C6-...} = {CLSID_BLP_PREVIEW}
-
-Software\Microsoft\Windows\CurrentVersion
-├─ Explorer\ThumbnailHandlers          → ".blp" = {CLSID_BLP_THUMB}
-├─ PreviewHandlers                     → {CLSID_BLP_PREVIEW} = "BLP Preview Handler"
-└─ Explorer\Advanced
-   ShowPreviewHandlers = 1 (DWORD)
-============================================================================ */
-
+/// Детерминированная установка в HKCU (x64), строго OUT-OF-PROC превью (prevhost.exe).
+/// - Preview CLSID: AppID = {тот же GUID}, InprocServer32 = dll, ThreadingModel="Both"
+/// - AppID\{GUID}\DllSurrogate = "prevhost.exe" (REG_SZ)
+/// - Никаких AppID\prevhost.exe, никаких DisableProcessIsolation для превью
+/// - Thumbnail: DisableProcessIsolation=1, ThreadingModel="Apartment"
+/// - Полный pre-clean всех наших ключей перед записью
 pub fn install() -> io::Result<()> {
     if let Err(err) = install_inner() {
-        log_ui(format!("Install failed: {err}"));
+        log(format!("Install failed: {err}"));
     }
     Ok(())
 }
 
 fn install_inner() -> io::Result<()> {
-    log_ui("Install (current user): start");
+    log("Install (current user, x64, out-of-proc preview): start");
 
-    // 1) Materialize embedded DLL into %LOCALAPPDATA%\blp-thumb-win
+    // 0) Материализуем DLL в %LOCALAPPDATA%\blp-thumb-win\blp_thumb_win.dll
     let dll_path: PathBuf = {
         let base = env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"C:\Users\Default\AppData\Local"));
         let dir = base.join("blp-thumb-win");
         fs::create_dir_all(&dir).map_err(|e| {
-            log_ui(format!("Failed to create dir {}: {e}", dir.display()));
+            log(format!("Failed to create dir {}: {e}", dir.display()));
             e
         })?;
         let path = dir.join("blp_thumb_win.dll");
-        log_ui(format!(
+        log(format!(
             "Writing DLL {} ({} bytes)",
             path.display(),
             DLL_BYTES.len()
         ));
         fs::write(&path, DLL_BYTES).map_err(|e| {
-            log_ui(format!("Failed to write DLL {}: {e}", path.display()));
+            log(format!("Failed to write DLL {}: {e}", path.display()));
             e
         })?;
-        log_ui("DLL materialized");
+        log("DLL materialized");
         path
     };
 
-    log_ui(format!(
-        "Install (current user): DLL materialized to {}",
-        dll_path.display()
-    ));
-
-    // 2) COM registration under HKCU
     let root = RegKey::predef(HKEY_CURRENT_USER);
-
     let ext = DEFAULT_EXT; // ".blp"
+    let progid = DEFAULT_PROGID; // ProgID для .blp
+
     let thumb_clsid = CLSID_BLP_THUMB.to_braced_upper();
     let thumb_catid = SHELL_THUMB_HANDLER_CATID.to_braced_upper();
     let preview_clsid = CLSID_BLP_PREVIEW.to_braced_upper();
     let preview_catid = SHELL_PREVIEW_HANDLER_CATID.to_braced_upper();
 
-    log_ui(format!(
-        "Using CLSIDs: THUMB={} PREVIEW={}, CATs: THUMB={} PREVIEW={}",
-        thumb_clsid, preview_clsid, thumb_catid, preview_catid
+    // Используем сам GUID превью как AppID (это нормальная схема)
+    let appid = preview_clsid.clone();
+
+    log(format!(
+        "Using CLSIDs: THUMB={} PREVIEW={}, CATs: THUMB={} PREVIEW={}, AppID={}",
+        thumb_clsid, preview_clsid, thumb_catid, preview_catid, appid
     ));
 
-    // --- Shell Extensions\Approved (opt-in both CLSIDs)
+    // Утилиты удаления
+    let del_tree = |path: &str| -> io::Result<()> {
+        match root.delete_subkey_all(path) {
+            Ok(()) => log(format!("Pre-clean: removed {}", path)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                log(format!("Pre-clean: missing {}", path))
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    };
+    let del_value = |key_path: &str, value_name: &str| -> io::Result<()> {
+        match root.open_subkey_with_flags(key_path, KEY_READ | KEY_SET_VALUE) {
+            Ok(key) => match key.delete_value(value_name) {
+                Ok(()) => log(format!(
+                    "Pre-clean: removed value {}\\{}",
+                    key_path, value_name
+                )),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!(
+                    "Pre-clean: value missing {}\\{}",
+                    key_path, value_name
+                )),
+                Err(e) => return Err(e),
+            },
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                log(format!("Pre-clean: missing {}", key_path))
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    };
+
+    // 1) ПОЛНАЯ зачистка перед записью
+    log("Pre-clean: start");
+
+    // CLSID ветки
+    del_tree(&format!(r"Software\Classes\CLSID\{}", thumb_clsid))?;
+    del_tree(&format!(r"Software\Classes\CLSID\{}", preview_clsid))?;
+
+    // AppID ветки (наш AppID и лишний prevhost.exe)
+    del_tree(&format!(r"Software\Classes\AppID\{}", appid))?;
+    del_tree(r"Software\Classes\AppID\prevhost.exe")?;
+
+    // ShellEx привязки: под расширением, ProgID и SFA\.blp
+    del_tree(&format!(
+        r"Software\Classes\{}\ShellEx\{}",
+        ext, thumb_catid
+    ))?;
+    del_tree(&format!(
+        r"Software\Classes\{}\ShellEx\{}",
+        ext, preview_catid
+    ))?;
+    del_tree(&format!(
+        r"Software\Classes\{}\ShellEx\{}",
+        progid, thumb_catid
+    ))?;
+    del_tree(&format!(
+        r"Software\Classes\{}\ShellEx\{}",
+        progid, preview_catid
+    ))?;
+    del_tree(&format!(
+        r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
+        ext, thumb_catid
+    ))?;
+    del_tree(&format!(
+        r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
+        ext, preview_catid
+    ))?;
+
+    // .blp\PersistentHandler — удалить, чтобы не перехватывал обработку
+    del_tree(&format!(r"Software\Classes\{}\PersistentHandler", ext))?;
+
+    // CLSID\Preview\PersistentAddinsRegistered — выпиливаем (не нужно)
+    del_tree(&format!(
+        r"Software\Classes\CLSID\{}\PersistentAddinsRegistered",
+        preview_clsid
+    ))?;
+
+    // Списки Explorer (удаляем записи и запишем заново)
+    del_value(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
+        ext,
+    )?;
+    del_value(
+        r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers",
+        preview_clsid.as_str(),
+    )?;
+
+    // Shell Extensions Approved (удаляем наши строки)
+    del_value(
+        r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
+        thumb_clsid.as_str(),
+    )?;
+    del_value(
+        r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
+        preview_clsid.as_str(),
+    )?;
+
+    log("Pre-clean: done");
+
+    // 2) Одобряем расширения (HKCU)
     {
+        log("Approving shell extensions");
         let approved = Rk::open(
             &root,
             r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
         )?;
-        log_ui("Approving shell extensions");
         approved.set(&thumb_clsid, FRIENDLY_NAME)?;
         approved.set(&preview_clsid, PREVIEW_FRIENDLY_NAME)?;
     }
 
-    // --- Thumbnail CLSID node
+    // 3) Thumbnail CLSID (IN-PROC thumbnails: OK для Explorer)
     {
-        log_ui("Registering Thumbnail CLSID tree");
+        log("Registering Thumbnail CLSID tree");
         let cls = Rk::open(&root, format!(r"Software\Classes\CLSID\{}", &thumb_clsid))?;
         cls.set_default(FRIENDLY_NAME)?;
-        cls.set("DisableProcessIsolation", 1u32)?;
+        cls.set("DisableProcessIsolation", 1u32)?; // thumbs — в процессе explorer
         let inproc = cls.sub("InprocServer32")?;
         inproc.set_default(dll_path.as_os_str())?;
         inproc.set("ThreadingModel", "Apartment")?;
         let _ = cls.sub(&format!(r"Implemented Categories\{}", thumb_catid))?;
     }
 
-    // --- Preview CLSID node (out-of-proc via prevhost)
+    // 4) Preview CLSID (STRICT OUT-OF-PROC)
     {
-        log_ui("Registering Preview CLSID tree");
+        log("Registering Preview CLSID tree (OUT-OF-PROC via prevhost.exe)");
         let cls = Rk::open(&root, format!(r"Software\Classes\CLSID\{}", &preview_clsid))?;
         cls.set_default(PREVIEW_FRIENDLY_NAME)?;
         cls.set("DisplayName", format!("@{}", dll_path.display()))?;
-        cls.set("AppID", PREVHOST_APPID_X64.to_braced_upper())?;
-        cls.set("DisableProcessIsolation", 1u32)?;
+
+        // Обязательно InprocServer32 (хоть он и грузится в суррогате), ThreadingModel="Both"
         let inproc = cls.sub("InprocServer32")?;
         inproc.set_default(dll_path.as_os_str())?;
-        inproc.set("ThreadingModel", "Apartment")?;
+        inproc.set("ThreadingModel", "Both")?;
+
+        // Категория превью
         let _ = cls.sub(&format!(r"Implemented Categories\{}", preview_catid))?;
 
-        // Bind the preview handler via PersistentAddinsRegistered (category → handler CLSID).
-        // Using the preview CLSID itself as the "persistent handler node" works fine.
-        log_ui("Binding Preview via PersistentAddinsRegistered");
-        let par = cls.sub("PersistentAddinsRegistered")?;
-        par.sub(&preview_catid)?
-            .set_default(preview_clsid.as_str())?;
+        // НИКАКОГО DisableProcessIsolation у превью
+        let _ = cls.delete_value("DisableProcessIsolation");
+
+        // Ставим AppID = тот же GUID, что и CLSID превью
+        cls.set("AppID", appid.as_str())?;
     }
 
-    // --- .blp file type metadata (+ PersistentHandler that points to our preview CLSID)
+    // 5) AppID → prevhost.exe (REG_SZ, БЕЗ AppID\prevhost.exe)
     {
-        log_ui("Writing .blp file-type metadata");
+        log("Configuring AppID -> prevhost.exe (REG_SZ)");
+        let appid_path = format!(r"Software\Classes\AppID\{}", appid);
+        // Полностью пересоздадим ветку, чтобы гарантированно сбросить типы значений
+        let _ = del_tree(&appid_path);
+        let appid_key = Rk::open(&root, &appid_path)?;
+        appid_key.set_default("Preview Handler Surrogate Host")?;
+        // Критично: REG_SZ и именно "prevhost.exe"
+        appid_key.set("DllSurrogate", "prevhost.exe")?;
+
+        // На всякий — выпилим возможные хвосты
+        let _ = del_tree(r"Software\Classes\AppID\prevhost.exe");
+    }
+
+    // 6) .blp метаданные (без PersistentHandler)
+    {
+        log("Writing .blp file-type metadata (no PersistentHandler)");
         let extk = Rk::open(&root, format!(r"Software\Classes\{}", ext))?;
+        // Content Type
         match extk.get::<String>("Content Type") {
             Ok(s) if !s.trim_matches(char::from(0)).is_empty() && s != "image/x-blp" => {
-                log_ui(format!("Skip Content Type override (current={s})"));
+                // если уже что-то стоит и не наше — не трогаем
+                log(format!("Skip Content Type override (current={s})"));
             }
             _ => {
                 extk.set("Content Type", "image/x-blp")?;
             }
         }
         extk.set("PerceivedType", "image")?;
-        match extk.get::<String>("") {
-            Ok(s) if !s.trim_matches(char::from(0)).is_empty() => {
-                log_ui(format!("Extension default already set to {s}"));
-            }
-            _ => {
-                extk.set_default(DEFAULT_PROGID)?;
-            }
-        }
-
-        // --- PersistentHandler mapping
-        // Forces Explorer’s preview path resolution through our handler even if
-        // PerceivedType=image would prefer a built-in previewer.
-        // We use the preview CLSID as the PersistentHandler CLSID node.
-        log_ui(format!(
-            r"Binding {} \ PersistentHandler -> {}",
-            ext, preview_clsid
-        ));
-        extk.sub("PersistentHandler")?
-            .set_default(preview_clsid.as_str())?;
+        // Default ProgID
+        extk.set_default(progid)?;
+        // Гарантированно удалим PersistentHandler ещё раз
+        let _ = root.delete_subkey_all(&format!(r"Software\Classes\{}\PersistentHandler", ext));
     }
 
-    // --- ProgID + ShellEx bindings (primary binding point)
+    // 7) ProgID + ShellEx привязки
     {
-        log_ui("Binding ProgID ShellEx handlers");
-        let pid = Rk::open(&root, format!(r"Software\Classes\{}", DEFAULT_PROGID))?;
+        log("Binding ProgID ShellEx handlers");
+        let pid = Rk::open(&root, format!(r"Software\Classes\{}", progid))?;
         if pid
             .get::<String>("")
             .map(|s| s.trim_matches(char::from(0)).is_empty())
@@ -214,9 +270,9 @@ fn install_inner() -> io::Result<()> {
             .set_default(preview_clsid.as_str())?;
     }
 
-    // --- Bind also under .blp and SystemFileAssociations\.blp (secondary binding points)
+    // 8) Дублируем привязки под .blp и SFA\.blp (Explorer смотрит в оба места)
     {
-        log_ui("Binding ShellEx under .blp and SystemFileAssociations");
+        log("Binding ShellEx under .blp and SystemFileAssociations");
         let ext_sx = Rk::open(&root, format!(r"Software\Classes\{}\ShellEx", ext))?;
         ext_sx
             .sub(&thumb_catid)?
@@ -237,9 +293,9 @@ fn install_inner() -> io::Result<()> {
             .set_default(preview_clsid.as_str())?;
     }
 
-    // --- Explorer handler lists
+    // 9) Списки хендлеров в Explorer
     {
-        log_ui("Updating Explorer handler lists");
+        log("Updating Explorer handler lists");
         Rk::open(
             &root,
             r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
@@ -252,11 +308,11 @@ fn install_inner() -> io::Result<()> {
         .set(preview_clsid.as_str(), PREVIEW_FRIENDLY_NAME)?;
     }
 
-    // --- Enable Preview Pane handlers globally for this user (QoL toggles)
+    // 10) Удобные флаги Explorer (не критично, но помогает)
     if let Ok((adv, _)) =
         root.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced")
     {
-        log_ui("Setting Explorer Advanced toggles for previews/thumbnails");
+        log("Setting Explorer Advanced toggles for previews/thumbnails");
         let _ = adv.set_value("ShowPreviewHandlers", &1u32);
         let _ = adv.set_value("IconsOnly", &0u32);
         let _ = adv.set_value("DisableThumbnails", &0u32);
@@ -264,8 +320,8 @@ fn install_inner() -> io::Result<()> {
         let _ = adv.set_value("DisableThumbnailsOnNetworkFolders", &0u32);
     }
 
-    // 3) Notify Explorer that associations changed (refresh caches)
+    // 11) Уведомляем Explorer
     notify_shell_assoc("install");
-    log_ui("Installed in HKCU. Use 'Restart Explorer' to refresh thumbnails.");
+    log("Installed in HKCU (x64, out-of-proc). Restart Explorer to refresh.");
     Ok(())
 }

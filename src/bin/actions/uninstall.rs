@@ -1,6 +1,6 @@
 use crate::utils::notify_shell_assoc::notify_shell_assoc;
 
-use blp_thumb_win::log::log_ui;
+use blp_thumb_win::log::log;
 use blp_thumb_win::utils::guid::GuidExt;
 use blp_thumb_win::{
     CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, SHELL_PREVIEW_HANDLER_CATID,
@@ -44,13 +44,13 @@ Missing keys are treated as already-clean; all ops are per-user (HKCU).
 
 pub fn uninstall() -> io::Result<()> {
     if let Err(err) = uninstall_inner() {
-        log_ui(format!("Uninstall failed: {}", err));
+        log(format!("Uninstall failed: {}", err));
     }
     Ok(())
 }
 
 fn uninstall_inner() -> io::Result<()> {
-    log_ui("Uninstall (current user): start — removing activation points.");
+    log("Uninstall (current user): start — removing activation points.");
 
     let root = RegKey::predef(HKEY_CURRENT_USER);
 
@@ -65,9 +65,9 @@ fn uninstall_inner() -> io::Result<()> {
     // Helpers
     let del_tree = |path: &str| -> io::Result<()> {
         match root.delete_subkey_all(path) {
-            Ok(()) => log_ui(format!("Removed key tree: {}", path)),
+            Ok(()) => log(format!("Removed key tree: {}", path)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                log_ui(format!("Key missing (skip): {}", path))
+                log(format!("Key missing (skip): {}", path))
             }
             Err(e) => return Err(e),
         }
@@ -77,15 +77,15 @@ fn uninstall_inner() -> io::Result<()> {
     let del_value = |key_path: &str, value_name: &str| -> io::Result<()> {
         match root.open_subkey_with_flags(key_path, KEY_READ | KEY_SET_VALUE) {
             Ok(key) => match key.delete_value(value_name) {
-                Ok(()) => log_ui(format!("Removed value: {} \\ {}", key_path, value_name)),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => log_ui(format!(
+                Ok(()) => log(format!("Removed value: {} \\ {}", key_path, value_name)),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!(
                     "Value missing (skip): {} \\ {}",
                     key_path, value_name
                 )),
                 Err(e) => return Err(e),
             },
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                log_ui(format!("Key missing (skip): {}", key_path))
+                log(format!("Key missing (skip): {}", key_path))
             }
             Err(e) => return Err(e),
         }
@@ -101,7 +101,7 @@ fn uninstall_inner() -> io::Result<()> {
                     if v.eq_ignore_ascii_case(expect) {
                         del_tree(subkey_path)?;
                     } else {
-                        log_ui(format!(
+                        log(format!(
                             "Preserving {} (Default != ours): '{}'",
                             subkey_path, v
                         ));
@@ -112,7 +112,7 @@ fn uninstall_inner() -> io::Result<()> {
                 }
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                log_ui(format!("Missing (skip): {}", subkey_path))
+                log(format!("Missing (skip): {}", subkey_path))
             }
             Err(e) => return Err(e),
         }
@@ -175,24 +175,24 @@ fn uninstall_inner() -> io::Result<()> {
                     cur = cur.trim_matches(char::from(0)).trim().to_string();
                     if cur.eq_ignore_ascii_case(thumb_clsid.as_str()) {
                         key.delete_value(ext)?;
-                        log_ui(format!(
+                        log(format!(
                             "Removed ThumbnailHandlers mapping: {} -> {}",
                             ext, thumb_clsid
                         ));
                     } else {
-                        log_ui(format!(
+                        log(format!(
                             "Preserving ThumbnailHandlers mapping ({} -> {}), not ours",
                             ext, cur
                         ));
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    log_ui("ThumbnailHandlers mapping missing (skip)")
+                    log("ThumbnailHandlers mapping missing (skip)")
                 }
                 Err(e) => return Err(e),
             },
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                log_ui("ThumbnailHandlers key missing (skip)")
+                log("ThumbnailHandlers key missing (skip)")
             }
             Err(e) => return Err(e),
         }
@@ -231,6 +231,6 @@ fn uninstall_inner() -> io::Result<()> {
     // 6) Notify shell
     notify_shell_assoc("uninstall");
 
-    log_ui("Uninstall completed (HKCU). DLL activation points removed; associations left intact.");
+    log("Uninstall completed (HKCU). DLL activation points removed; associations left intact.");
     Ok(())
 }

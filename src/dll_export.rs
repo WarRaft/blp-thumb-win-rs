@@ -1,14 +1,13 @@
 use crate::class_factory::{BlpClassFactory, ProviderKind};
 use crate::utils::guid::GuidExt;
-use crate::{
-    CLASS_E_CLASSNOTAVAILABLE, CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DLL_LOCK_COUNT, log_desktop,
-};
+use crate::{CLASS_E_CLASSNOTAVAILABLE, CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DLL_LOCK_COUNT};
 // .to_braced_upper() for &GUID
 
 use std::ffi::c_void;
 use std::ptr::null_mut;
 use std::sync::atomic::Ordering;
 
+use crate::log::log;
 use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER, S_FALSE, S_OK};
 use windows::Win32::System::Com::{APTTYPE, APTTYPEQUALIFIER, CoGetApartmentType, IClassFactory};
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
@@ -43,7 +42,7 @@ fn log_host_environment() {
                 }
             }
             Err(e) => {
-                let _ = log_desktop(format!("IsWow64Process failed: {:?}", e));
+                let _ = log(format!("IsWow64Process failed: {:?}", e));
                 "unknown"
             }
         }
@@ -58,7 +57,7 @@ fn log_host_environment() {
         }
     };
 
-    let _ = log_desktop(format!(
+    let _ = log(format!(
         "Host: exe='{}' pid={} tid={} arch={} apartment={} qual={}",
         exe, pid, tid, arch, apt_s, qual_s
     ));
@@ -71,10 +70,10 @@ pub extern "system" fn DllGetClassObject(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    let _ = log_desktop("DllGetClassObject called");
+    log("DllGetClassObject called");
     log_host_environment();
 
-    let _ = log_desktop(format!(
+    let _ = log(format!(
         "DllGetClassObject args: rclsid_ptr={:?} riid_ptr={:?} ppv_ptr={:?}",
         rclsid, riid, ppv
     ));
@@ -88,13 +87,13 @@ pub extern "system" fn DllGetClassObject(
         } else {
             "CLSID(unknown)"
         };
-        let _ = log_desktop(format!(
+        let _ = log(format!(
             "DllGetClassObject rclsid={} {}",
             name,
             g.to_braced_upper()
         ));
     } else {
-        let _ = log_desktop("DllGetClassObject rclsid=NULL");
+        let _ = log("DllGetClassObject rclsid=NULL");
     }
     if let Some(g) = unsafe { riid.as_ref() } {
         let name = if *g == IClassFactory::IID {
@@ -104,18 +103,18 @@ pub extern "system" fn DllGetClassObject(
         } else {
             "IID(unknown)"
         };
-        let _ = log_desktop(format!(
+        let _ = log(format!(
             "DllGetClassObject riid={} {}",
             name,
             g.to_braced_upper()
         ));
     } else {
-        let _ = log_desktop("DllGetClassObject riid=NULL");
+        let _ = log("DllGetClassObject riid=NULL");
     }
 
     // Validate ppv
     if ppv.is_null() {
-        let _ = log_desktop("DllGetClassObject: ppv=NULL -> E_POINTER");
+        let _ = log("DllGetClassObject: ppv=NULL -> E_POINTER");
         return E_POINTER;
     }
     unsafe {
@@ -126,19 +125,19 @@ pub extern "system" fn DllGetClassObject(
     let r = match unsafe { rclsid.as_ref() } {
         Some(r) => *r,
         None => {
-            let _ = log_desktop("DllGetClassObject: rclsid=NULL -> E_POINTER");
+            let _ = log("DllGetClassObject: rclsid=NULL -> E_POINTER");
             return E_POINTER;
         }
     };
 
     let factory = if r == CLSID_BLP_THUMB {
-        let _ = log_desktop("DllGetClassObject: class match -> Thumbnail provider");
+        let _ = log("DllGetClassObject: class match -> Thumbnail provider");
         BlpClassFactory::new(ProviderKind::Thumbnail)
     } else if r == CLSID_BLP_PREVIEW {
-        let _ = log_desktop("DllGetClassObject: class match -> Preview handler");
+        let _ = log("DllGetClassObject: class match -> Preview handler");
         BlpClassFactory::new(ProviderKind::Preview)
     } else {
-        let _ = log_desktop("DllGetClassObject: CLASS_E_CLASSNOTAVAILABLE");
+        let _ = log("DllGetClassObject: CLASS_E_CLASSNOTAVAILABLE");
         return CLASS_E_CLASSNOTAVAILABLE;
     };
 
@@ -146,7 +145,7 @@ pub extern "system" fn DllGetClassObject(
     let requested_iid = match unsafe { riid.as_ref() } {
         Some(i) => *i,
         None => {
-            let _ = log_desktop("DllGetClassObject: riid=NULL -> E_POINTER");
+            let _ = log("DllGetClassObject: riid=NULL -> E_POINTER");
             return E_POINTER;
         }
     };
@@ -157,13 +156,13 @@ pub extern "system" fn DllGetClassObject(
         unsafe {
             *ppv = cf.into_raw();
         }
-        let _ = log_desktop(format!(
+        let _ = log(format!(
             "DllGetClassObject: returning IClassFactory -> S_OK, out ppv={:?}",
             unsafe { *ppv }
         ));
         S_OK
     } else {
-        let _ = log_desktop(format!(
+        let _ = log(format!(
             "DllGetClassObject: unsupported riid {} -> E_NOINTERFACE",
             requested_iid.to_braced_upper()
         ));
@@ -174,10 +173,10 @@ pub extern "system" fn DllGetClassObject(
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
-    let _ = log_desktop("DllCanUnloadNow called");
+    log("DllCanUnloadNow called");
     let locks = DLL_LOCK_COUNT.load(Ordering::SeqCst);
     let hr = if locks == 0 { S_OK } else { S_FALSE };
-    let _ = log_desktop(format!(
+    log(format!(
         "DllCanUnloadNow: DLL_LOCK_COUNT={} -> {}",
         locks,
         if locks == 0 { "S_OK" } else { "S_FALSE" }

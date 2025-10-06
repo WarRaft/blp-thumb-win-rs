@@ -1,5 +1,5 @@
 use crate::DLL_LOCK_COUNT;
-use crate::log_desktop;
+use crate::log::log;
 use crate::preview_handler::BlpPreviewHandler;
 use crate::thumbnail_provider::BlpThumbProvider;
 use crate::utils::guid::GuidExt;
@@ -83,7 +83,7 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
             let g = gref.to_braced_upper();
             format!("riid={} {}", name, g)
         };
-        let _ = log_desktop(format!(
+        log(format!(
             "IClassFactory::CreateInstance kind={:?} outer=(aggregation unsupported) {} ppv={}",
             self.kind,
             riid_log,
@@ -91,22 +91,22 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
         ));
 
         if ppv.is_null() || riid.is_null() {
-            let _ = log_desktop("IClassFactory::CreateInstance result=E_POINTER");
+            log("IClassFactory::CreateInstance result=E_POINTER");
             return Err(Error::from(E_POINTER));
         }
         unsafe {
             *ppv = null_mut();
         } // clear out param
-        let _ = log_desktop("IClassFactory::CreateInstance ppv <- NULL");
+        log("IClassFactory::CreateInstance ppv <- NULL");
 
         // Construct the concrete object
         let unk: IUnknown = match self.kind {
             ProviderKind::Thumbnail => {
-                let _ = log_desktop("IClassFactory::CreateInstance new=BlpThumbProvider");
+                log("IClassFactory::CreateInstance new=BlpThumbProvider");
                 BlpThumbProvider::new().into()
             }
             ProviderKind::Preview => {
-                let _ = log_desktop("IClassFactory::CreateInstance new=BlpPreviewHandler");
+                log("IClassFactory::CreateInstance new=BlpPreviewHandler");
                 BlpPreviewHandler::new().into()
             }
         };
@@ -115,17 +115,14 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
             match self.kind {
                 ProviderKind::Thumbnail => {
                     if *riid == <IThumbnailProvider as Interface>::IID {
-                        let _ = log_desktop(
-                            "IClassFactory::CreateInstance returning IThumbnailProvider",
-                        );
+                        log("IClassFactory::CreateInstance returning IThumbnailProvider");
                         *ppv = unk.cast::<IThumbnailProvider>()?.into_raw();
                         return Ok(());
                     }
                 }
                 ProviderKind::Preview => {
                     if *riid == <IPreviewHandler as Interface>::IID {
-                        let _ =
-                            log_desktop("IClassFactory::CreateInstance returning IPreviewHandler");
+                        log("IClassFactory::CreateInstance returning IPreviewHandler");
                         *ppv = unk.cast::<IPreviewHandler>()?.into_raw();
                         return Ok(());
                     }
@@ -133,29 +130,28 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
             }
 
             if *riid == <IInitializeWithItem as Interface>::IID {
-                let _ = log_desktop("IClassFactory::CreateInstance returning IInitializeWithItem");
+                log("IClassFactory::CreateInstance returning IInitializeWithItem");
                 *ppv = unk.cast::<IInitializeWithItem>()?.into_raw();
                 return Ok(());
             }
             if *riid == <IInitializeWithStream as Interface>::IID {
-                let _ =
-                    log_desktop("IClassFactory::CreateInstance returning IInitializeWithStream");
+                log("IClassFactory::CreateInstance returning IInitializeWithStream");
                 *ppv = unk.cast::<IInitializeWithStream>()?.into_raw();
                 return Ok(());
             }
             if *riid == <IInitializeWithFile as Interface>::IID {
-                let _ = log_desktop("IClassFactory::CreateInstance returning IInitializeWithFile");
+                log("IClassFactory::CreateInstance returning IInitializeWithFile");
                 *ppv = unk.cast::<IInitializeWithFile>()?.into_raw();
                 return Ok(());
             }
             if *riid == <IUnknown as Interface>::IID {
-                let _ = log_desktop("IClassFactory::CreateInstance returning IUnknown");
+                log("IClassFactory::CreateInstance returning IUnknown");
                 *ppv = unk.into_raw();
                 return Ok(());
             }
         }
 
-        let _ = log_desktop("IClassFactory::CreateInstance result=E_NOINTERFACE");
+        log("IClassFactory::CreateInstance result=E_NOINTERFACE");
         Err(Error::from(E_NOINTERFACE))
     }
 
@@ -163,13 +159,13 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
     fn LockServer(&self, f_lock: BOOL) -> windows::core::Result<()> {
         if f_lock.as_bool() {
             let new = DLL_LOCK_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
-            let _ = log_desktop(format!(
+            log(format!(
                 "IClassFactory::LockServer lock=true new_lock_count={}",
                 new
             ));
         } else {
             let new = DLL_LOCK_COUNT.fetch_sub(1, Ordering::SeqCst) - 1;
-            let _ = log_desktop(format!(
+            log(format!(
                 "IClassFactory::LockServer lock=false new_lock_count={}",
                 new
             ));

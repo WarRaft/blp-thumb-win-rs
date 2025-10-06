@@ -1,6 +1,7 @@
-use blp_thumb_win::log::log_ui;
+use blp_thumb_win::log::log;
 use std::ffi::{OsStr, OsString};
 use std::io;
+use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use winreg::enums::RegType;
 use winreg::types::FromRegValue;
@@ -91,7 +92,7 @@ impl<'a> Rk<'a> {
     #[inline]
     pub fn open(root: &'a RegKey, path: impl Into<String>) -> io::Result<Self> {
         let path = path.into();
-        log_ui(format!("Creating/opening registry key: {}", &path));
+        log(format!("Creating/opening registry key: {}", &path));
         let (key, _) = root.create_subkey(&path)?;
         Ok(Self {
             path,
@@ -107,7 +108,7 @@ impl<'a> Rk<'a> {
         } else {
             format!(r"{}\{}", self.path, suffix)
         };
-        log_ui(format!("Creating/opening registry key: {}", &full));
+        log(format!("Creating/opening registry key: {}", &full));
         let (k, _) = self.key.create_subkey(suffix)?;
         Ok(Rk {
             path: full,
@@ -122,28 +123,28 @@ impl<'a> Rk<'a> {
         let name_disp = if name.is_empty() { "(Default)" } else { name };
         match value.into_reg_val() {
             RegVal::Sz(os) => {
-                log_ui(format!(
+                log(format!(
                     "Setting value: {} \\ {} = REG_SZ",
                     self.path, name_disp
                 ));
                 self.key.set_value(name, &os)
             }
             RegVal::Dword(d) => {
-                log_ui(format!(
+                log(format!(
                     "Setting value: {} \\ {} = REG_DWORD",
                     self.path, name_disp
                 ));
                 self.key.set_value(name, &d)
             }
             RegVal::Qword(q) => {
-                log_ui(format!(
+                log(format!(
                     "Setting value: {} \\ {} = REG_QWORD",
                     self.path, name_disp
                 ));
                 self.key.set_value(name, &q)
             }
             RegVal::Bin(bytes) => {
-                log_ui(format!(
+                log(format!(
                     "Setting value: {} \\ {} = REG_BINARY ({} bytes)",
                     self.path,
                     name_disp,
@@ -166,5 +167,55 @@ impl<'a> Rk<'a> {
     #[inline]
     pub fn get<T: FromRegValue>(&self, name: &str) -> io::Result<T> {
         self.key.get_value(name)
+    }
+
+    /// --- НОВОЕ: raw setter для нестандартных типов (например, REG_EXPAND_SZ)
+    pub fn set_raw_value(&self, name: &str, val: &RegValue) -> io::Result<()> {
+        self.key.set_raw_value(name, val)?;
+        let ty = match val.vtype {
+            RegType::REG_EXPAND_SZ => "REG_EXPAND_SZ",
+            RegType::REG_MULTI_SZ => "REG_MULTI_SZ",
+            RegType::REG_BINARY => "REG_BINARY",
+            RegType::REG_QWORD => "REG_QWORD",
+            RegType::REG_DWORD => "REG_DWORD",
+            RegType::REG_NONE => "REG_NONE",
+            RegType::REG_SZ => "REG_SZ",
+            _ => "REG_*",
+        };
+        log(format!("Setting value: {} \\ {} = {}", self.path, name, ty));
+        Ok(())
+    }
+
+    pub fn set_expand_sz(&self, name: &str, data: &str) -> io::Result<()> {
+        // UTF-16LE + завершающий \0
+        let wide: Vec<u16> = OsStr::new(data)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // Превращаем u16-последовательность в байты (LE)
+        let bytes: Vec<u8> = unsafe {
+            std::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * 2).to_vec()
+        };
+
+        let val = RegValue {
+            vtype: RegType::REG_EXPAND_SZ,
+            bytes,
+        };
+        self.set_raw_value(name, &val)
+    }
+
+    pub fn delete_value(&self, name: &str) -> io::Result<()> {
+        match self.key.delete_value(name) {
+            Ok(()) => {
+                log(format!("Deleted value: {} \\ {}", self.path, name));
+                Ok(())
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                log(format!("Value missing (skip): {} \\ {}", self.path, name));
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 }

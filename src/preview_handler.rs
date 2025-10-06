@@ -1,7 +1,8 @@
-use crate::{DLL_LOCK_COUNT, ProviderState, log_desktop};
+use crate::{DLL_LOCK_COUNT, ProviderState};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+use crate::log::log;
 use crate::utils::create_hbitmap_bgra_premul::create_hbitmap_bgra_premul;
 use crate::utils::decode_blp_rgba::decode_blp_rgba;
 use crate::utils::resize_fit_rgba_rect::resize_fit_rgba_rect;
@@ -53,7 +54,7 @@ pub struct BlpPreviewHandler {
 impl BlpPreviewHandler {
     pub fn new() -> Self {
         DLL_LOCK_COUNT.fetch_add(1, Ordering::SeqCst);
-        let _ = log_desktop("Method BlpPreviewHandler::new called");
+        log("Method BlpPreviewHandler::new called");
         Self {
             state: Mutex::new(ProviderState::default()),
             ui: Mutex::new(PreviewUi::default()),
@@ -61,7 +62,7 @@ impl BlpPreviewHandler {
     }
 
     fn acquire_source(&self) -> WinResult<(Arc<[u8]>, bool)> {
-        let _ = log_desktop("Method BlpPreviewHandler::acquire_source called");
+        log("Method BlpPreviewHandler::acquire_source called");
 
         let (data_arc, path_opt) = {
             let st = self.state.lock().unwrap();
@@ -69,7 +70,7 @@ impl BlpPreviewHandler {
         };
 
         if let Some(buf) = data_arc {
-            let _ = log_desktop(format!(
+            log(format!(
                 "BlpPreviewHandler::acquire_source returning stream buffer ({} bytes)",
                 buf.len()
             ));
@@ -80,19 +81,19 @@ impl BlpPreviewHandler {
             Some(p) => p,
             None => {
                 let err = Error::from(E_FAIL);
-                let _ = log_desktop(format!(
+                log(format!(
                     "Method BlpPreviewHandler::acquire_source returning: Err({err:?}) (no path)"
                 ));
                 return Err(err);
             }
         };
 
-        let _ = log_desktop(format!(
+        log(format!(
             "BlpPreviewHandler::acquire_source reading file '{}'",
             path
         ));
         let raw = std::fs::read(&path).map_err(|e| {
-            let _ = log_desktop(format!(
+            log(format!(
                 "BlpPreviewHandler::acquire_source read failed: {}",
                 e
             ));
@@ -101,7 +102,7 @@ impl BlpPreviewHandler {
 
         // ВАЖНО: явный тип, чтобы не было E0282
         let out: Arc<[u8]> = Arc::from(raw);
-        let _ = log_desktop(format!(
+        log(format!(
             "Method BlpPreviewHandler::acquire_source returning file buffer ({} bytes)",
             out.len()
         ));
@@ -109,7 +110,7 @@ impl BlpPreviewHandler {
     }
 
     fn destroy_child(ui: &mut PreviewUi) {
-        let _ = log_desktop("Method BlpPreviewHandler::destroy_child called");
+        log("Method BlpPreviewHandler::destroy_child called");
         if let Some(hwnd) = ui.window.take() {
             unsafe {
                 let old = SendMessageW(
@@ -129,25 +130,23 @@ impl BlpPreviewHandler {
                 let _ = DeleteObject(old.into());
             }
         }
-        let _ = log_desktop("Method BlpPreviewHandler::destroy_child returning: Ok");
+        log("Method BlpPreviewHandler::destroy_child returning: Ok");
     }
 
     fn ensure_window(ui: &mut PreviewUi) -> WinResult<HWND> {
-        let _ = log_desktop(format!(
+        log(format!(
             "Method BlpPreviewHandler::ensure_window called with parent={:?} existing={:?} rect=({}, {}, {}, {})",
             ui.parent, ui.window, ui.rect.left, ui.rect.top, ui.rect.right, ui.rect.bottom
         ));
 
         if let Some(hwnd) = ui.window {
-            let _ = log_desktop(
-                "Method BlpPreviewHandler::ensure_window returning: Ok (reusing child)",
-            );
+            log("Method BlpPreviewHandler::ensure_window returning: Ok (reusing child)");
             return Ok(hwnd);
         }
 
         let parent = ui.parent.ok_or_else(|| {
             let err = Error::from(E_FAIL);
-            let _ = log_desktop(format!(
+            log(format!(
                 "Method BlpPreviewHandler::ensure_window returning: Err({err:?}) (no parent)"
             ));
             err
@@ -180,17 +179,17 @@ impl BlpPreviewHandler {
         }
 
         ui.window = Some(hwnd);
-        let _ =
-            log_desktop("Method BlpPreviewHandler::ensure_window returning: Ok (created child)");
+
+        log("Method BlpPreviewHandler::ensure_window returning: Ok (created child)");
         Ok(hwnd)
     }
 
     fn render_current(ui: &mut PreviewUi) -> WinResult<()> {
-        let _ = log_desktop("Method BlpPreviewHandler::render_current called");
+        log("Method BlpPreviewHandler::render_current called");
         let (iw, ih, data) = match &ui.image {
             Some(t) => t.clone(),
             None => {
-                let _ = log_desktop("BlpPreviewHandler::render_current: no image, nothing to draw");
+                log("BlpPreviewHandler::render_current: no image, nothing to draw");
                 return Ok(());
             }
         };
@@ -238,11 +237,11 @@ impl BlpPreviewHandler {
             }
         }
 
-        let _ = log_desktop(format!(
+        log(format!(
             "BlpPreviewHandler::render_current drew {}x{} (src {}x{}, target {}x{}, hwnd={:?})",
             tw, th, iw, ih, target_w, target_h, hwnd
         ));
-        let _ = log_desktop("Method BlpPreviewHandler::render_current returning: Ok");
+        log("Method BlpPreviewHandler::render_current returning: Ok");
         Ok(())
     }
 }
@@ -250,11 +249,11 @@ impl BlpPreviewHandler {
 impl Drop for BlpPreviewHandler {
     fn drop(&mut self) {
         DLL_LOCK_COUNT.fetch_sub(1, Ordering::SeqCst);
-        let _ = log_desktop("Method BlpPreviewHandler::drop called");
+        log("Method BlpPreviewHandler::drop called");
         let mut ui = self.ui.lock().unwrap();
         Self::destroy_child(&mut ui);
         ui.image = None;
-        let _ = log_desktop("Method BlpPreviewHandler::drop returning: Ok");
+        log("Method BlpPreviewHandler::drop returning: Ok");
     }
 }
 
@@ -264,7 +263,7 @@ impl IInitializeWithItem_Impl for BlpPreviewHandler_Impl {
     #[allow(non_snake_case)]
     fn Initialize(&self, psi: windows::core::Ref<'_, IShellItem>, grf_mode: u32) -> WinResult<()> {
         // Не логируем `psi` через {:?} — у него нет Debug
-        let _ = log_desktop(format!(
+        log(format!(
             "Method IInitializeWithItem::Initialize called with grf_mode=0x{:08X}",
             grf_mode
         ));
@@ -273,7 +272,7 @@ impl IInitializeWithItem_Impl for BlpPreviewHandler_Impl {
             let pw: PWSTR = item.GetDisplayName(SIGDN_FILESYSPATH)?;
             if pw.is_null() {
                 let err = Error::from(E_FAIL);
-                let _ = log_desktop(format!(
+                log(format!(
                     "Method IInitializeWithItem::Initialize returning: Err({err:?}) (null path)"
                 ));
                 return Err(err);
@@ -284,12 +283,12 @@ impl IInitializeWithItem_Impl for BlpPreviewHandler_Impl {
             st.path_utf8 = Some(path.clone());
             st.stream_data = None;
             drop(st);
-            let _ = log_desktop(format!(
+            log(format!(
                 "IInitializeWithItem::Initialize resolved path='{}'",
                 path
             ));
         }
-        let _ = log_desktop("Method IInitializeWithItem::Initialize returning: Ok");
+        log("Method IInitializeWithItem::Initialize returning: Ok");
         Ok(())
     }
 }
@@ -297,13 +296,13 @@ impl IInitializeWithItem_Impl for BlpPreviewHandler_Impl {
 impl IInitializeWithFile_Impl for BlpPreviewHandler_Impl {
     #[allow(non_snake_case)]
     fn Initialize(&self, psz_file_path: &PCWSTR, grf_mode: u32) -> WinResult<()> {
-        let _ = log_desktop(format!(
+        log(format!(
             "Method IInitializeWithFile::Initialize called with grf_mode=0x{:08X}",
             grf_mode
         ));
         if psz_file_path.is_null() || psz_file_path.0.is_null() {
             let err = Error::from(E_FAIL);
-            let _ = log_desktop(format!(
+            log(format!(
                 "Method IInitializeWithFile::Initialize returning: Err({err:?}) (null path)"
             ));
             return Err(err);
@@ -313,8 +312,8 @@ impl IInitializeWithFile_Impl for BlpPreviewHandler_Impl {
         st.path_utf8 = Some(path.clone());
         st.stream_data = None;
         drop(st);
-        let _ = log_desktop(format!("IInitializeWithFile::Initialize path='{}'", path));
-        let _ = log_desktop("Method IInitializeWithFile::Initialize returning: Ok");
+        log(format!("IInitializeWithFile::Initialize path='{}'", path));
+        log("Method IInitializeWithFile::Initialize returning: Ok");
         Ok(())
     }
 }
@@ -323,7 +322,7 @@ impl IInitializeWithStream_Impl for BlpPreviewHandler_Impl {
     #[allow(non_snake_case)]
     fn Initialize(&self, pstream: windows::core::Ref<'_, IStream>, grf_mode: u32) -> WinResult<()> {
         // Не логируем pstream через {:?}
-        let _ = log_desktop(format!(
+        log(format!(
             "Method IInitializeWithStream::Initialize called with grf_mode=0x{:08X}",
             grf_mode
         ));
@@ -347,7 +346,7 @@ impl IInitializeWithStream_Impl for BlpPreviewHandler_Impl {
             };
             if hr.is_err() && hr != windows::core::HRESULT::from(S_FALSE) {
                 let err = Error::from(hr);
-                let _ = log_desktop(format!(
+                log(format!(
                     "Method IInitializeWithStream::Initialize(Read) returning: Err({err:?})"
                 ));
                 return Err(err);
@@ -363,7 +362,7 @@ impl IInitializeWithStream_Impl for BlpPreviewHandler_Impl {
         let total = data.len();
         if total == 0 {
             let err = Error::from(E_FAIL);
-            let _ = log_desktop(format!(
+            log(format!(
                 "Method IInitializeWithStream::Initialize returning: Err({err:?}) (empty stream)"
             ));
             return Err(err);
@@ -375,11 +374,11 @@ impl IInitializeWithStream_Impl for BlpPreviewHandler_Impl {
         st.stream_data = Some(Arc::from(data)); // Arc<[u8]>
         drop(st);
 
-        let _ = log_desktop(format!(
+        log(format!(
             "IInitializeWithStream::Initialize cached {} bytes",
             total
         ));
-        let _ = log_desktop("Method IInitializeWithStream::Initialize returning: Ok");
+        log("Method IInitializeWithStream::Initialize returning: Ok");
         Ok(())
     }
 }
@@ -391,19 +390,19 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
     fn SetWindow(&self, hwnd: HWND, prc: *const RECT) -> WinResult<()> {
         if prc.is_null() {
             let err = Error::from(E_INVALIDARG);
-            let _ = log_desktop(format!(
+            log(format!(
                 "Method IPreviewHandler::SetWindow returning: Err({err:?}) (prc=NULL)"
             ));
             return Err(err);
         }
         let rect = unsafe { *prc };
-        let _ = log_desktop(format!(
+        log(format!(
             "Method IPreviewHandler::SetWindow called with hwnd={:?} rect=({}, {}, {}, {})",
             hwnd, rect.left, rect.top, rect.right, rect.bottom
         ));
         if hwnd.0.is_null() {
             let err = Error::from(E_INVALIDARG);
-            let _ = log_desktop(format!(
+            log(format!(
                 "Method IPreviewHandler::SetWindow returning: Err({err:?}) (hwnd=NULL)"
             ));
             return Err(err);
@@ -418,7 +417,7 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         if ui.image.is_some() {
             BlpPreviewHandler::render_current(&mut ui)?;
         }
-        let _ = log_desktop("Method IPreviewHandler::SetWindow returning: Ok");
+        log("Method IPreviewHandler::SetWindow returning: Ok");
         Ok(())
     }
 
@@ -426,13 +425,13 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
     fn SetRect(&self, prc: *const RECT) -> WinResult<()> {
         if prc.is_null() {
             let err = Error::from(E_INVALIDARG);
-            let _ = log_desktop(format!(
+            log(format!(
                 "Method IPreviewHandler::SetRect returning: Err({err:?}) (prc=NULL)"
             ));
             return Err(err);
         }
         let rect = unsafe { *prc };
-        let _ = log_desktop(format!(
+        log(format!(
             "Method IPreviewHandler::SetRect called with rect=({}, {}, {}, {})",
             rect.left, rect.top, rect.right, rect.bottom
         ));
@@ -442,17 +441,17 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         if ui.image.is_some() {
             BlpPreviewHandler::render_current(&mut ui)?;
         }
-        let _ = log_desktop("Method IPreviewHandler::SetRect returning: Ok");
+        log("Method IPreviewHandler::SetRect returning: Ok");
         Ok(())
     }
 
     #[allow(non_snake_case)]
     fn DoPreview(&self) -> WinResult<()> {
-        let _ = log_desktop("Method IPreviewHandler::DoPreview called");
+        log("Method IPreviewHandler::DoPreview called");
         let (data, from_stream) = self.acquire_source()?;
         let (w, h, rgba) = decode_blp_rgba(&data).map_err(|_| {
             let err = Error::from(E_FAIL);
-            let _ = log_desktop(format!(
+            log(format!(
                 "Method IPreviewHandler::DoPreview returning: Err({err:?}) (decode failed)"
             ));
             err
@@ -461,40 +460,40 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         let mut ui = self.ui.lock().unwrap();
         ui.image = Some((w, h, Arc::from(rgba)));
         BlpPreviewHandler::render_current(&mut ui)?;
-        let _ = log_desktop(format!(
+        log(format!(
             "IPreviewHandler::DoPreview decoded {}x{} from {}",
             w,
             h,
             if from_stream { "stream" } else { "file" }
         ));
-        let _ = log_desktop("Method IPreviewHandler::DoPreview returning: Ok");
+        log("Method IPreviewHandler::DoPreview returning: Ok");
         Ok(())
     }
 
     #[allow(non_snake_case)]
     fn Unload(&self) -> WinResult<()> {
-        let _ = log_desktop("Method IPreviewHandler::Unload called");
+        log("Method IPreviewHandler::Unload called");
         let mut ui = self.ui.lock().unwrap();
         BlpPreviewHandler::destroy_child(&mut ui);
         ui.image = None;
-        let _ = log_desktop("Method IPreviewHandler::Unload returning: Ok");
+        log("Method IPreviewHandler::Unload returning: Ok");
         Ok(())
     }
 
     #[allow(non_snake_case)]
     fn SetFocus(&self) -> WinResult<()> {
-        let _ = log_desktop("Method IPreviewHandler::SetFocus called");
+        log("Method IPreviewHandler::SetFocus called");
         let ui = self.ui.lock().unwrap();
         if let Some(hwnd) = ui.window.or(ui.parent) {
             unsafe {
                 let _ = SetFocus(Some(hwnd));
             }
-            let _ = log_desktop(format!("IPreviewHandler::SetFocus hwnd={:?}", hwnd));
-            let _ = log_desktop("Method IPreviewHandler::SetFocus returning: Ok");
+            log(format!("IPreviewHandler::SetFocus hwnd={:?}", hwnd));
+            log("Method IPreviewHandler::SetFocus returning: Ok");
             Ok(())
         } else {
             let err = Error::from(E_FAIL);
-            let _ = log_desktop(format!(
+            log(format!(
                 "Method IPreviewHandler::SetFocus returning: Err({err:?})"
             ));
             Err(err)
@@ -503,17 +502,17 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
 
     #[allow(non_snake_case)]
     fn QueryFocus(&self) -> WinResult<HWND> {
-        let _ = log_desktop("Method IPreviewHandler::QueryFocus called");
+        log("Method IPreviewHandler::QueryFocus called");
         let ui = self.ui.lock().unwrap();
         match ui.window.or(ui.parent) {
             Some(hwnd) => {
-                let _ = log_desktop(format!("IPreviewHandler::QueryFocus hwnd={:?}", hwnd));
-                let _ = log_desktop("Method IPreviewHandler::QueryFocus returning: Ok");
+                log(format!("IPreviewHandler::QueryFocus hwnd={:?}", hwnd));
+                log("Method IPreviewHandler::QueryFocus returning: Ok");
                 Ok(hwnd)
             }
             None => {
                 let err = Error::from(E_FAIL);
-                let _ = log_desktop(format!(
+                log(format!(
                     "Method IPreviewHandler::QueryFocus returning: Err({err:?})"
                 ));
                 Err(err)
@@ -524,11 +523,10 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
     #[allow(non_snake_case)]
     fn TranslateAccelerator(&self, pmsg: *const MSG) -> WinResult<()> {
         if pmsg.is_null() {
-            let _ =
-                log_desktop("Method IPreviewHandler::TranslateAccelerator called with pmsg=NULL");
+            log("Method IPreviewHandler::TranslateAccelerator called with pmsg=NULL");
         } else {
             unsafe {
-                let _ = log_desktop(format!(
+                log(format!(
                     "Method IPreviewHandler::TranslateAccelerator called with msg=0x{:04X} wParam=0x{:X} lParam=0x{:X} hwnd={:?}",
                     (*pmsg).message,
                     (*pmsg).wParam.0,
@@ -539,7 +537,7 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         }
         // Not handled → S_FALSE
         let err = Error::from(S_FALSE);
-        let _ = log_desktop(format!(
+        log(format!(
             "Method IPreviewHandler::TranslateAccelerator returning: Err({err:?})"
         ));
         Err(err)
@@ -551,17 +549,17 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
 impl IOleWindow_Impl for BlpPreviewHandler_Impl {
     #[allow(non_snake_case)]
     fn GetWindow(&self) -> WinResult<HWND> {
-        let _ = log_desktop("Method IOleWindow::GetWindow called");
+        log("Method IOleWindow::GetWindow called");
         let ui = self.ui.lock().unwrap();
         match ui.window.or(ui.parent) {
             Some(hwnd) => {
-                let _ = log_desktop(format!("IOleWindow::GetWindow hwnd={:?}", hwnd));
-                let _ = log_desktop("Method IOleWindow::GetWindow returning: Ok");
+                log(format!("IOleWindow::GetWindow hwnd={:?}", hwnd));
+                log("Method IOleWindow::GetWindow returning: Ok");
                 Ok(hwnd)
             }
             None => {
                 let err = Error::from(E_FAIL);
-                let _ = log_desktop(format!(
+                log(format!(
                     "Method IOleWindow::GetWindow returning: Err({err:?})"
                 ));
                 Err(err)
@@ -571,13 +569,13 @@ impl IOleWindow_Impl for BlpPreviewHandler_Impl {
 
     #[allow(non_snake_case)]
     fn ContextSensitiveHelp(&self, fenter_mode: BOOL) -> WinResult<()> {
-        let _ = log_desktop(format!(
+        log(format!(
             "Method IOleWindow::ContextSensitiveHelp called with fEnterMode={}",
             fenter_mode.as_bool()
         ));
         // Not supported
         let err = Error::from(S_FALSE);
-        let _ = log_desktop(format!(
+        log(format!(
             "Method IOleWindow::ContextSensitiveHelp returning: Err({err:?})"
         ));
         Err(err)

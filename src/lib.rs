@@ -11,7 +11,6 @@ compile_error!("blp-thumb-win must be built for 64-bit targets");
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
-pub use crate::log::log_desktop;
 use windows::core::HRESULT;
 
 const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x80040111u32 as i32);
