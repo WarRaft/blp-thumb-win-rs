@@ -1,13 +1,13 @@
 use crate::actiions::clear_cache::clear_cache;
 use crate::actiions::install::install;
 use crate::actiions::restart_explorer::restart_explorer;
+use crate::actiions::toggle_logging::toggle_logging;
 use crate::actiions::uninstall::uninstall;
 use blp_thumb_win::log::log_endabled;
 use dialoguer::Select;
 use dialoguer::console::{Term, style};
 use dialoguer::theme::ColorfulTheme;
 use std::io;
-use crate::actiions::toggle_logging::toggle_logging;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -41,8 +41,8 @@ pub fn action_choose() -> io::Result<(Action, String)> {
     ];
 
     let mut labels: Vec<String> = vec![
-        "Install (all users)".into(),
-        "Uninstall (all users)".into(),
+        "Install (current user)".into(),
+        "Uninstall (current user)".into(),
         "Restart Explorer".into(),
         "Clear thumbnail cache".into(),
     ];

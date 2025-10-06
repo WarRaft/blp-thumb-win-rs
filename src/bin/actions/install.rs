@@ -13,52 +13,54 @@ use std::{env, fs, io};
 use winreg::RegKey;
 use winreg::enums::HKEY_CURRENT_USER;
 
-/** ============================================================================
+/* ============================================================================
 Per-user (HKCU) registration of COM thumbnail & preview handlers for the BLP format.
 
-We write only HKCU and only keys required to load our handlers; we do NOT touch
-user app associations (OpenWith{*}/UserChoice/Applications).
+No regsvr32, no System32 — we write only HKCU keys needed for Explorer to load:
+- Thumbnail provider (IThumbnailProvider) is in-proc.
+- Preview handler (IPreviewHandler) is hosted out-of-proc via prevhost (AppID).
 
-References:
-- Thumbnail providers: https://learn.microsoft.com/windows/win32/shell/thumbnail-providers
-- Preview handlers:   https://learn.microsoft.com/windows/win32/shell/preview-handlers
+Docs:
+  - Thumbnail providers: https://learn.microsoft.com/windows/win32/shell/thumbnail-providers
+  - Preview handlers:   https://learn.microsoft.com/windows/win32/shell/preview-handlers
 
-Registry layout (ASCII):
+Registry layout (effective, under HKCU):
 
-HKCU
-└─ Software
-├─ Classes
-│  ├─ .blp
-│  │  (Default)        = WarRaft.BLP               ; only if empty
-│  │  Content Type     = image/x-blp
-│  │  PerceivedType    = image
-│  ├─ WarRaft.BLP                                   ; our ProgID
-│  │  (Default)        = BLP Thumbnail/Preview Provider
-│  │  └─ ShellEx
-│  │     ├─ {E357FCCD-A995-4576-B01F-234630154E96}  = {CLSID_BLP_THUMB}
-│  │     └─ {8895B1C6-B41F-4C1C-A562-0D564250836F}  = {CLSID_BLP_PREVIEW}
-│  └─ CLSID
-│     ├─ {CLSID_BLP_THUMB}
-│     │  (Default)     = BLP Thumbnail Provider
-│     │  DisableProcessIsolation = 1 (DWORD)
-│     │  └─ InprocServer32 → @=<dll>, ThreadingModel="Apartment"
-│     │  └─ Implemented Categories\{E357FCCD-...}
-│     └─ {CLSID_BLP_PREVIEW}
-│        (Default)     = BLP Preview Handler
-│        DisplayName   = @<dll>
-│        AppID         = {6D2B5079-2F0B-48DD-AB7F-97CEC514D30B}   ; x64 prevhost
-│        DisableProcessIsolation = 1 (DWORD)
-│        └─ InprocServer32 → @=<dll>, ThreadingModel="Apartment"
-│        └─ Implemented Categories\{8895B1C6-...}
-└─ Microsoft\Windows\CurrentVersion
-├─ Explorer\ThumbnailHandlers → ".blp" = {CLSID_BLP_THUMB}
-└─ PreviewHandlers → {CLSID_BLP_PREVIEW} = "BLP Preview Handler"
-└─ Microsoft\Windows\CurrentVersion\Explorer\Advanced
-ShowPreviewHandlers = 1 (DWORD)
+Software
+└─ Classes
+   ├─ .blp
+   │  (Default)        = WarRaft.BLP               ; only if empty
+   │  Content Type     = image/x-blp
+    │ PerceivedType    = image
+   ├─ WarRaft.BLP                                   ; our ProgID
+   │  (Default)        = BLP Thumbnail/Preview Provider
+   │  └─ ShellEx
+   │     ├─ {E357FCCD-A995-4576-B01F-234630154E96}  = {CLSID_BLP_THUMB}
+   │     └─ {8895B1C6-B41F-4C1C-A562-0D564250836F}  = {CLSID_BLP_PREVIEW}
+   └─ CLSID
+      ├─ {CLSID_BLP_THUMB}
+      │  (Default)     = BLP Thumbnail Provider
+      │  DisableProcessIsolation = 1 (DWORD)
+      │  └─ InprocServer32 → @=<dll>, ThreadingModel="Apartment"
+      │  └─ Implemented Categories\{E357FCCD-...}
+      └─ {CLSID_BLP_PREVIEW}
+         (Default)     = BLP Preview Handler
+         DisplayName   = @<dll>
+         AppID         = {6D2B5079-2F0B-48DD-AB7F-97CEC514D30B}   ; x64 prevhost
+         DisableProcessIsolation = 1 (DWORD)
+         └─ InprocServer32 → @=<dll>, ThreadingModel="Apartment"
+         └─ Implemented Categories\{8895B1C6-...}
+
+Software\Microsoft\Windows\CurrentVersion
+├─ Explorer\ThumbnailHandlers          → ".blp" = {CLSID_BLP_THUMB}
+├─ PreviewHandlers                     → {CLSID_BLP_PREVIEW} = "BLP Preview Handler"
+└─ Explorer\Advanced
+   ShowPreviewHandlers = 1 (DWORD)
 ============================================================================ */
+
 pub fn install() -> io::Result<()> {
     if let Err(err) = install_inner() {
-        log_ui(format!("Install failed: {}", err));
+        log_ui(format!("Install failed: {err}"));
     }
     Ok(())
 }
@@ -66,14 +68,14 @@ pub fn install() -> io::Result<()> {
 fn install_inner() -> io::Result<()> {
     log_ui("Install (current user): start");
 
-    // 1) Materialize embedded DLL to %LOCALAPPDATA%\blp-thumb-win
+    // 1) Materialize embedded DLL into %LOCALAPPDATA%\blp-thumb-win
     let dll_path: PathBuf = {
         let base = env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"C:\Users\Default\AppData\Local"));
         let dir = base.join("blp-thumb-win");
         fs::create_dir_all(&dir).map_err(|e| {
-            log_ui(format!("Failed to create dir {}: {}", dir.display(), e));
+            log_ui(format!("Failed to create dir {}: {e}", dir.display()));
             e
         })?;
         let path = dir.join("blp_thumb_win.dll");
@@ -83,7 +85,7 @@ fn install_inner() -> io::Result<()> {
             DLL_BYTES.len()
         ));
         fs::write(&path, DLL_BYTES).map_err(|e| {
-            log_ui(format!("Failed to write DLL {}: {}", path.display(), e));
+            log_ui(format!("Failed to write DLL {}: {e}", path.display()));
             e
         })?;
         log_ui("DLL materialized");
@@ -95,7 +97,7 @@ fn install_inner() -> io::Result<()> {
         dll_path.display()
     ));
 
-    // 2) COM registration (HKCU)
+    // 2) COM registration under HKCU
     let root = RegKey::predef(HKEY_CURRENT_USER);
 
     let ext = DEFAULT_EXT; // ".blp"
@@ -104,15 +106,22 @@ fn install_inner() -> io::Result<()> {
     let preview_clsid = CLSID_BLP_PREVIEW.to_braced_upper();
     let preview_catid = SHELL_PREVIEW_HANDLER_CATID.to_braced_upper();
 
-    // Explorer\Approved (both CLSIDs)
-    let approved = Rk::open(
-        &root,
-        r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
-    )?;
-    approved.set(&thumb_clsid, FRIENDLY_NAME)?;
-    approved.set(&preview_clsid, PREVIEW_FRIENDLY_NAME)?;
+    log_ui(format!(
+        "Using CLSIDs: THUMB={} PREVIEW={}, CATs: THUMB={} PREVIEW={}",
+        thumb_clsid, preview_clsid, thumb_catid, preview_catid
+    ));
 
-    // --- Thumbnail CLSID
+    // --- Shell Extensions\Approved (opt-in both CLSIDs)
+    {
+        let approved = Rk::open(
+            &root,
+            r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
+        )?;
+        approved.set(&thumb_clsid, FRIENDLY_NAME)?;
+        approved.set(&preview_clsid, PREVIEW_FRIENDLY_NAME)?;
+    }
+
+    // --- Thumbnail CLSID node
     {
         let cls = Rk::open(&root, format!(r"Software\Classes\CLSID\{}", &thumb_clsid))?;
         cls.set_default(FRIENDLY_NAME)?;
@@ -123,7 +132,7 @@ fn install_inner() -> io::Result<()> {
         let _ = cls.sub(&format!(r"Implemented Categories\{}", thumb_catid))?;
     }
 
-    // --- Preview CLSID  (match the .reg that помог)
+    // --- Preview CLSID node (out-of-proc via prevhost)
     {
         let cls = Rk::open(&root, format!(r"Software\Classes\CLSID\{}", &preview_clsid))?;
         cls.set_default(PREVIEW_FRIENDLY_NAME)?;
@@ -136,12 +145,12 @@ fn install_inner() -> io::Result<()> {
         let _ = cls.sub(&format!(r"Implemented Categories\{}", preview_catid))?;
     }
 
-    // .blp metadata
+    // --- .blp file type metadata
     {
         let extk = Rk::open(&root, format!(r"Software\Classes\{}", ext))?;
         match extk.get::<String>("Content Type") {
             Ok(s) if !s.trim_matches(char::from(0)).is_empty() && s != "image/x-blp" => {
-                log_ui(format!("Skip Content Type override (current={})", s));
+                log_ui(format!("Skip Content Type override (current={s})"));
             }
             _ => {
                 extk.set("Content Type", "image/x-blp")?;
@@ -151,7 +160,7 @@ fn install_inner() -> io::Result<()> {
         extk.set("PerceivedType", "image")?;
         match extk.get::<String>("") {
             Ok(s) if !s.trim_matches(char::from(0)).is_empty() => {
-                log_ui(format!("Extension default already set to {}", s));
+                log_ui(format!("Extension default already set to {s}"));
             }
             _ => {
                 extk.set_default(DEFAULT_PROGID)?;
@@ -159,7 +168,7 @@ fn install_inner() -> io::Result<()> {
         }
     }
 
-    // WarRaft.BLP ProgID & ShellEx bindings
+    // --- ProgID + ShellEx bindings (primary binding point)
     {
         let pid = Rk::open(&root, format!(r"Software\Classes\{}", DEFAULT_PROGID))?;
         if pid
@@ -178,7 +187,7 @@ fn install_inner() -> io::Result<()> {
             .set_default(preview_clsid.as_str())?;
     }
 
-    // Bind under .blp and SystemFileAssociations\.blp
+    // --- Bind also under .blp and SystemFileAssociations\.blp (secondary binding points)
     {
         let ext_sx = Rk::open(&root, format!(r"Software\Classes\{}\ShellEx", ext))?;
         ext_sx
@@ -200,7 +209,7 @@ fn install_inner() -> io::Result<()> {
             .set_default(preview_clsid.as_str())?;
     }
 
-    // Explorer handler lists
+    // --- Explorer handler lists
     Rk::open(
         &root,
         r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
@@ -212,7 +221,7 @@ fn install_inner() -> io::Result<()> {
     )?
     .set(preview_clsid.as_str(), PREVIEW_FRIENDLY_NAME)?;
 
-    // Enable Preview Pane handlers globally for this user
+    // --- Enable Preview Pane handlers globally for this user (quality-of-life toggles)
     if let Ok((adv, _)) =
         root.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced")
     {
@@ -223,7 +232,7 @@ fn install_inner() -> io::Result<()> {
         let _ = adv.set_value("DisableThumbnailsOnNetworkFolders", &0u32);
     }
 
-    // Notify the shell
+    // 3) Notify Explorer that associations changed (refresh caches)
     notify_shell_assoc("install");
     log_ui("Installed in HKCU. Use 'Restart Explorer' to refresh thumbnails.");
     Ok(())
