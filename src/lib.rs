@@ -1,39 +1,22 @@
 mod class_factory;
-pub mod keys;
+mod dll_export;
 pub mod log;
 mod preview_handler;
 mod thumbnail_provider;
+pub mod utils;
 
 #[cfg(not(target_pointer_width = "64"))]
 compile_error!("blp-thumb-win must be built for 64-bit targets");
 
-use std::env;
-use std::ffi::c_void;
-use std::path::PathBuf;
-use std::ptr::null_mut;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
 
-use crate::keys::{CLSID_BLP_PREVIEW, CLSID_BLP_THUMB};
-use blp::core::image::{ImageBlp, MAX_MIPS};
-
-use once_cell::sync::Lazy;
-use windows::Win32::Graphics::Gdi::{BI_BITFIELDS, HBITMAP};
-
-use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_NOINTERFACE, E_POINTER, S_FALSE, S_OK};
-use windows::Win32::Graphics::Gdi::{
-    BITMAPINFO, BITMAPV5HEADER, CreateDIBSection, DIB_RGB_COLORS, DeleteObject,
-};
-use windows::Win32::System::Com::IClassFactory;
-
-use crate::class_factory::{BlpClassFactory, ProviderKind};
 pub use crate::log::log_desktop;
-use windows::core::{GUID, HRESULT, IUnknown, Interface};
+use windows::core::HRESULT;
 
 const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x80040111u32 as i32);
 
 static DLL_LOCK_COUNT: AtomicU32 = AtomicU32::new(0);
-static DESKTOP_LOG_PATH: Lazy<Result<PathBuf, String>> = Lazy::new(desktop_log_path);
 
 #[derive(Default)]
 struct ProviderState {
@@ -41,203 +24,51 @@ struct ProviderState {
     stream_data: Option<Arc<[u8]>>,
 }
 
-pub fn log_file_path() -> Option<PathBuf> {
-    DESKTOP_LOG_PATH.as_ref().ok().map(|p| p.clone())
-}
+/// Common constants for BLP Thumbnail Provider registration.
+/// Shared between the COM DLL and the installer. No duplicated string CLSIDs.
+use windows::core::GUID;
 
-fn desktop_log_path() -> Result<PathBuf, String> {
-    let mut candidates = Vec::new();
+/// AppID for the 64-bit Preview Handler host (`prevhost.exe`).
+///
+/// Notes:
+/// - This is the well-known 64-bit Prevhost AppID used by Explorer to host
+///   preview handlers out-of-proc on x64 Windows.
+/// - If you decide to bind your preview handler explicitly to prevhost,
+///   set `"AppID"` to this GUID string under
+///   `HKCU\Software\Classes\CLSID\{YourPreviewClsid}`.
+///
+/// Example write:
+/// ```ignore
+/// use crate::utils::guid::GuidExt;
+/// clsid_key.set("AppID", PREVHOST_APPID_X64.to_braced_upper())?;
+/// ```
+pub const PREVHOST_APPID_X64: GUID = GUID::from_u128(0x6D2B5079_2F0B_48DD_AB7F_97CEC514D30B);
 
-    if let Some(profile) = env::var_os("USERPROFILE") {
-        candidates.push(PathBuf::from(profile));
-    }
-    if let (Some(drive), Some(path)) = (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
-        let mut p = PathBuf::from(drive);
-        p.push(PathBuf::from(path));
-        candidates.push(p);
-    }
-    if let Some(home) = env::var_os("HOME") {
-        candidates.push(PathBuf::from(home));
-    }
+/// Shell Thumbnail Provider category (Implemented Categories + ShellEx binding).
+/// - HKCR\CLSID\{CLSID}\Implemented Categories\{SHELL_THUMB_HANDLER_CATID}
+/// - HKCR\<.ext | ProgID>\ShellEx\{SHELL_THUMB_HANDLER_CATID} = {CLSID}
+pub const SHELL_THUMB_HANDLER_CATID: GUID = GUID::from_u128(0xE357FCCD_A995_4576_B01F_234630154E96);
 
-    for mut base in candidates {
-        base.push("Desktop");
-        base.push("blp-thumb-win.log");
-        return Ok(base);
-    }
+/// Shell Preview Handler category.
+/// - HKCR\\CLSID\\{CLSID}\\Implemented Categories\\{SHELL_PREVIEW_HANDLER_CATID}
+/// - HKCR\\<.ext | ProgID>\\ShellEx\\{SHELL_PREVIEW_HANDLER_CATID} = {CLSID}
+pub const SHELL_PREVIEW_HANDLER_CATID: GUID =
+    GUID::from_u128(0x8895B1C6_B41F_4C1C_A562_0D564250836F);
 
-    Err("unable to locate Desktop path via USERPROFILE/HOMEPATH/HOME".to_string())
-}
+/// CLSID of this provider. Must match DLL exports and registry bindings.
+pub const CLSID_BLP_THUMB: GUID = GUID::from_u128(0xB2E9A1F3_7C5D_4E2B_96A1_2C3D4E5F6A7B);
 
-// ---- helpers: decode/resize/convert ----
-fn decode_blp_rgba(data: &[u8]) -> Result<(u32, u32, Vec<u8>), ()> {
-    let mut img = ImageBlp::from_buf(data).map_err(|_| ())?;
+/// CLSID of the preview handler.
+pub const CLSID_BLP_PREVIEW: GUID = GUID::from_u128(0x8FC2C3AB_5B0B_4DB0_BC2E_9D6DBFBB8EAA);
 
-    let mut vis = [false; MAX_MIPS];
-    vis[0] = true;
-    img.decode(data, &vis).map_err(|_| ())?;
+/// ProgID bound to `.blp` (HKCR\WarRaft.BLP; HKCR\.blp -> WarRaft.BLP).
+pub const DEFAULT_PROGID: &str = "WarRaft.BLP";
 
-    let mip0 = img.mipmaps[0].image.as_ref().ok_or(())?;
-    let (w, h) = (mip0.width(), mip0.height());
-    Ok((w, h, mip0.as_raw().clone()))
-}
+/// File extension this provider supports.
+pub const DEFAULT_EXT: &str = ".blp";
 
-#[inline]
-fn resize_fit_rgba(src: &[u8], sw: u32, sh: u32, cx: u32) -> (u32, u32, Vec<u8>) {
-    let (tw, th) = if sw >= sh {
-        let tw = cx.max(1);
-        let th = ((sh as u64 * tw as u64) / sw as u64).max(1) as u32;
-        (tw, th)
-    } else {
-        let th = cx.max(1);
-        let tw = ((sw as u64 * th as u64) / sh as u64).max(1) as u32;
-        (tw, th)
-    };
-    let mut out = vec![0u8; (tw * th * 4) as usize];
-    for y in 0..th {
-        let sy = (y as u64 * sh as u64 / th as u64) as u32;
-        for x in 0..tw {
-            let sx = (x as u64 * sw as u64 / tw as u64) as u32;
-            let si = ((sy * sw + sx) * 4) as usize;
-            let di = ((y * tw + x) * 4) as usize;
-            out[di..di + 4].copy_from_slice(&src[si..si + 4]);
-        }
-    }
-    (tw, th, out)
-}
+/// Human-friendly provider name (HKCR\CLSID\{CLSID}\(Default)).
+pub const FRIENDLY_NAME: &str = "BLP Thumbnail Provider";
 
-#[inline]
-fn rgba_to_bgra_premul(rgba: &[u8]) -> Vec<u8> {
-    let pixels = rgba.len() / 4;
-    let mut out = vec![0u8; rgba.len()];
-    for p in 0..pixels {
-        let r = rgba[p * 4 + 0] as u32;
-        let g = rgba[p * 4 + 1] as u32;
-        let b = rgba[p * 4 + 2] as u32;
-        let a = rgba[p * 4 + 3] as u32;
-        out[p * 4 + 0] = ((b * a + 127) / 255) as u8;
-        out[p * 4 + 1] = ((g * a + 127) / 255) as u8;
-        out[p * 4 + 2] = ((r * a + 127) / 255) as u8;
-        out[p * 4 + 3] = a as u8;
-    }
-    out
-}
-
-// ---- GDI ----
-unsafe fn create_hbitmap_bgra_premul(
-    width: i32,
-    height: i32,
-    pixels_bgra: &[u8],
-) -> windows::core::Result<HBITMAP> {
-    pub const LCS_SRGB_U32: u32 = 0x7352_4742; // 'sRGB' в little-endian
-
-    use core::ffi::c_void;
-    use core::mem::{size_of, zeroed};
-    use core::ptr::copy_nonoverlapping;
-
-    // BITMAPV5HEADER под топ-даун 32bpp BGRA с альфой
-    let mut v5: BITMAPV5HEADER = unsafe { zeroed() };
-    v5.bV5Size = size_of::<BITMAPV5HEADER>() as u32;
-    v5.bV5Width = width;
-    v5.bV5Height = -height; // отрицательная высота = top-down
-    v5.bV5Planes = 1;
-    v5.bV5BitCount = 32;
-    v5.bV5Compression = BI_BITFIELDS;
-    v5.bV5RedMask = 0x00FF_0000;
-    v5.bV5GreenMask = 0x0000_FF00;
-    v5.bV5BlueMask = 0x0000_00FF;
-    v5.bV5AlphaMask = 0xFF00_0000;
-    v5.bV5CSType = LCS_SRGB_U32; // 'sRGB'
-
-    let mut bits: *mut c_void = null_mut();
-
-    // Создаём DIB-секцию
-    let hbmp: HBITMAP = unsafe {
-        CreateDIBSection(
-            None, // Option<HDC>
-            &*(&v5 as *const BITMAPV5HEADER as *const BITMAPINFO),
-            DIB_RGB_COLORS,
-            &mut bits,
-            None, // hSection
-            0,    // offset
-        )?
-    };
-
-    // Проверяем, что нам отдали указатель на пиксели
-    if bits.is_null() {
-        unsafe {
-            let _ = DeleteObject(hbmp.into());
-        }
-        return Err(windows::core::Error::from(E_FAIL));
-    }
-
-    // Размер входного буфера должен совпасть
-    let expected = (width as usize) * (height as usize) * 4;
-    if pixels_bgra.len() != expected {
-        unsafe {
-            let _ = DeleteObject(hbmp.into());
-        }
-        return Err(windows::core::Error::from(E_INVALIDARG));
-    }
-
-    // Копируем BGRA pre-multiplied в DIB
-    unsafe { copy_nonoverlapping(pixels_bgra.as_ptr(), bits as *mut u8, expected) };
-
-    Ok(hbmp)
-}
-
-// ---- DLL exports ----
-#[unsafe(no_mangle)]
-#[allow(non_snake_case)]
-pub extern "system" fn DllGetClassObject(
-    rclsid: *const GUID,
-    riid: *const GUID,
-    ppv: *mut *mut c_void,
-) -> HRESULT {
-    if let Err(err) = log_desktop("DllGetClassObject called") {
-        eprintln!("[dll log] {err}");
-    }
-    unsafe {
-        if ppv.is_null() {
-            return E_POINTER;
-        }
-        *ppv = null_mut();
-
-        if rclsid.is_null() {
-            return E_POINTER;
-        }
-
-        let factory = if *rclsid == CLSID_BLP_THUMB {
-            BlpClassFactory::new(ProviderKind::Thumbnail)
-        } else if *rclsid == CLSID_BLP_PREVIEW {
-            BlpClassFactory::new(ProviderKind::Preview)
-        } else {
-            return CLASS_E_CLASSNOTAVAILABLE;
-        };
-
-        let cf: IClassFactory = factory.into();
-
-        if riid.is_null() {
-            return E_POINTER;
-        }
-        if *riid == IClassFactory::IID || *riid == IUnknown::IID {
-            *ppv = cf.into_raw();
-            S_OK
-        } else {
-            E_NOINTERFACE
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-#[allow(non_snake_case)]
-pub extern "system" fn DllCanUnloadNow() -> HRESULT {
-    if let Err(err) = log_desktop("DllCanUnloadNow called") {
-        eprintln!("[dll log] {err}");
-    }
-    if DLL_LOCK_COUNT.load(Ordering::SeqCst) == 0 {
-        S_OK
-    } else {
-        S_FALSE
-    }
-}
+/// Human-friendly preview handler name.
+pub const PREVIEW_FRIENDLY_NAME: &str = "BLP Preview Handler";

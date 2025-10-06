@@ -1,9 +1,11 @@
 use crate::utils::notify_shell_assoc::notify_shell_assoc;
-use blp_thumb_win::keys::{
-    DEFAULT_EXT, clsid_str, preview_clsid_str, shell_preview_handler_catid_str,
-    shell_thumb_handler_catid_str,
-};
+
 use blp_thumb_win::log::log_ui;
+use blp_thumb_win::utils::guid::GuidExt;
+use blp_thumb_win::{
+    CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, SHELL_PREVIEW_HANDLER_CATID,
+    SHELL_THUMB_HANDLER_CATID,
+};
 use std::io;
 use winreg::RegKey;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
@@ -59,12 +61,12 @@ fn uninstall_inner() -> io::Result<()> {
 
     let root = RegKey::predef(HKEY_CURRENT_USER);
 
-    let ext = DEFAULT_EXT; // ".blp"
-    let thumb_clsid = clsid_str(); // {CLSID_BLP_THUMB}
-    let preview_clsid = preview_clsid_str(); // {CLSID_BLP_PREVIEW}
-    let thumb_catid = shell_thumb_handler_catid_str(); // {E357FCCD-A995-...}
-    let preview_catid = shell_preview_handler_catid_str(); // {8895B1C6-B41F-...}
-    let progid = blp_thumb_win::keys::DEFAULT_PROGID;
+    let ext = DEFAULT_EXT;
+    let thumb_clsid = CLSID_BLP_THUMB.to_braced_upper();
+    let preview_clsid = CLSID_BLP_PREVIEW.to_braced_upper();
+    let thumb_catid = SHELL_THUMB_HANDLER_CATID.to_braced_upper();
+    let preview_catid = SHELL_PREVIEW_HANDLER_CATID.to_braced_upper();
+    let progid = DEFAULT_PROGID;
 
     // Small helper: delete whole subkey tree if exists; ignore NotFound.
     let del_tree = |path: &str| -> io::Result<()> {

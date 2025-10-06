@@ -1,8 +1,8 @@
 use crate::DLL_LOCK_COUNT;
-use crate::keys::guid_braced_upper;
 use crate::log_desktop;
 use crate::preview_handler::BlpPreviewHandler;
 use crate::thumbnail_provider::BlpThumbProvider;
+use crate::utils::guid::GuidExt;
 use std::ffi::c_void;
 use std::ptr::null_mut;
 use std::sync::atomic::Ordering;
@@ -78,8 +78,9 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
         let riid_log = if riid.is_null() {
             "riid=NULL".to_string()
         } else {
-            let name = iid_name(unsafe { &*riid });
-            let g = guid_braced_upper(unsafe { &*riid });
+            let gref: &GUID = unsafe { &*riid };
+            let name = iid_name(gref);
+            let g = gref.to_braced_upper();
             format!("riid={} {}", name, g)
         };
         let _ = log_desktop(format!(

@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 use std::{env, fs, io};
 
-use blp_thumb_win::keys::{clsid_str, preview_clsid_str};
 use blp_thumb_win::log::log_ui;
 
+use blp_thumb_win::utils::guid::GuidExt;
+use blp_thumb_win::{CLSID_BLP_PREVIEW, CLSID_BLP_THUMB};
 use winreg::RegKey;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
 
@@ -33,7 +34,7 @@ fn clear_cache_inner() -> io::Result<()> {
         let path = r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Cached";
         match root.open_subkey_with_flags(path, KEY_READ | KEY_SET_VALUE) {
             Ok(key) => {
-                let clsids = [clsid_str(), preview_clsid_str()];
+                let clsids = [CLSID_BLP_THUMB.to_braced_upper(), CLSID_BLP_PREVIEW.to_braced_upper()];
                 let mut total_removed = 0usize;
 
                 for clsid in clsids {

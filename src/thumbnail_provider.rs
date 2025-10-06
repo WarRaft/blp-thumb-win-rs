@@ -1,13 +1,14 @@
-use crate::{
-    DLL_LOCK_COUNT, ProviderState, create_hbitmap_bgra_premul, decode_blp_rgba, log_desktop,
-    resize_fit_rgba, rgba_to_bgra_premul,
-};
+use crate::{DLL_LOCK_COUNT, ProviderState, log_desktop};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 
 use windows_implement::implement;
 
+use crate::utils::create_hbitmap_bgra_premul::create_hbitmap_bgra_premul;
+use crate::utils::decode_blp_rgba::decode_blp_rgba;
+use crate::utils::resize_fit_rgba::resize_fit_rgba;
+use crate::utils::rgba_to_bgra_premul::rgba_to_bgra_premul;
 use windows::Win32::Graphics::Gdi::HBITMAP;
 use windows::Win32::System::Com::{ISequentialStream, IStream, STREAM_SEEK_SET};
 use windows::Win32::UI::Shell::PropertiesSystem::{

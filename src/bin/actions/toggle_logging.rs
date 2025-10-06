@@ -1,9 +1,9 @@
-use blp_thumb_win::keys::{LOG_SETTINGS_SUBKEY, LOGGING_VALUE_NAME};
-use blp_thumb_win::log::{log_endabled, log_ui};
+use blp_thumb_win::log::{
+    LOG_SETTINGS_SUBKEY, LOGGING_VALUE_NAME, log_endabled, log_file_path, log_ui,
+};
 use std::{fs, io};
 use winreg::RegKey;
 use winreg::enums::HKEY_CURRENT_USER;
-
 /* ============================================================================
 Toggle runtime logging (per-user, HKCU).
 
@@ -53,7 +53,7 @@ pub fn toggle_logging() -> io::Result<()> {
 
     // If we just disabled logging, best-effort remove the current log file (if any).
     if !target {
-        if let Some(path) = blp_thumb_win::log_file_path() {
+        if let Some(path) = log_file_path() {
             if path.exists() {
                 log_ui(format!("Removing log file: {}", path.display()));
                 match fs::remove_file(&path) {
