@@ -8,13 +8,14 @@
 
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
-use std::io;
-use std::io::Write;
-use std::sync::Once;
+use std::{io, io::Write, sync::Once};
 
-use windows::Win32::System::Diagnostics::Debug::OutputDebugStringW;
-use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::core::PCWSTR;
+use windows::{
+    Win32::System::Console::GetConsoleWindow,
+    Win32::System::Diagnostics::Debug::OutputDebugStringW,
+    Win32::System::Threading::GetCurrentThreadId, core::PCWSTR,
+};
+// <— добавили
 
 use winreg::RegKey;
 use winreg::enums::HKEY_CURRENT_USER;
@@ -49,23 +50,44 @@ pub fn toggle_logging() {
     } else {
         "[blp-thumb] logging: OFF"
     });
+
+    if new {
+        println!(
+            "[blp-thumb] Logging enabled.\n\
+             To view debug output, use Sysinternals DebugView:\n\
+             https://learn.microsoft.com/en-us/sysinternals/downloads/debugview"
+        );
+    }
 }
 
-/// Logs a message to DebugView if logging is enabled.
+#[inline]
+fn console_attached() -> bool {
+    let hwnd = unsafe { GetConsoleWindow() };
+    !hwnd.0.is_null()
+}
+
+/// Logs a message to STDOUT (if a console is attached) and to DebugView (if enabled).
 #[inline]
 pub fn log(message: impl AsRef<str>) {
-    // 1) printf на исходное сообщение
-    println!("{}", message.as_ref());
-    let _ = io::stdout().flush();
+    let msg = message.as_ref();
 
+    if console_attached() {
+        let _ = std::io::Write::write_all(&mut io::stdout(), msg.as_bytes());
+        let _ = std::io::Write::write_all(&mut io::stdout(), b"\n");
+        let _ = io::stdout().flush();
+    }
+
+    // 2) Фильтр по флагу для OutputDebugStringW
     if !log_enabled() {
         return;
     }
+
     let pid = std::process::id();
     let tid = unsafe { GetCurrentThreadId() };
 
-    let mut line = String::with_capacity(32 + message.as_ref().len());
-    let _ = write!(line, "[{}:{}] [blp-thumb] {}", pid, tid, message.as_ref());
+    // Префикс для DebugView
+    let mut line = String::with_capacity(32 + msg.len());
+    let _ = write!(line, "[{}:{}] [blp-thumb] {}", pid, tid, msg);
     ods_immediate(&line);
 }
 

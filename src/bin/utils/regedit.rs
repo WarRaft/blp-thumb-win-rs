@@ -1,7 +1,6 @@
 use blp_thumb_win::log::log;
 use std::ffi::{OsStr, OsString};
 use std::io;
-use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use winreg::enums::RegType;
 use winreg::types::FromRegValue;
@@ -167,42 +166,6 @@ impl<'a> Rk<'a> {
     #[inline]
     pub fn get<T: FromRegValue>(&self, name: &str) -> io::Result<T> {
         self.key.get_value(name)
-    }
-
-    /// --- НОВОЕ: raw setter для нестандартных типов (например, REG_EXPAND_SZ)
-    pub fn set_raw_value(&self, name: &str, val: &RegValue) -> io::Result<()> {
-        self.key.set_raw_value(name, val)?;
-        let ty = match val.vtype {
-            RegType::REG_EXPAND_SZ => "REG_EXPAND_SZ",
-            RegType::REG_MULTI_SZ => "REG_MULTI_SZ",
-            RegType::REG_BINARY => "REG_BINARY",
-            RegType::REG_QWORD => "REG_QWORD",
-            RegType::REG_DWORD => "REG_DWORD",
-            RegType::REG_NONE => "REG_NONE",
-            RegType::REG_SZ => "REG_SZ",
-            _ => "REG_*",
-        };
-        log(format!("Setting value: {} \\ {} = {}", self.path, name, ty));
-        Ok(())
-    }
-
-    pub fn set_expand_sz(&self, name: &str, data: &str) -> io::Result<()> {
-        // UTF-16LE + завершающий \0
-        let wide: Vec<u16> = OsStr::new(data)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        // Превращаем u16-последовательность в байты (LE)
-        let bytes: Vec<u8> = unsafe {
-            std::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * 2).to_vec()
-        };
-
-        let val = RegValue {
-            vtype: RegType::REG_EXPAND_SZ,
-            bytes,
-        };
-        self.set_raw_value(name, &val)
     }
 
     pub fn delete_value(&self, name: &str) -> io::Result<()> {
