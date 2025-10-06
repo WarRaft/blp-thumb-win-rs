@@ -18,20 +18,24 @@ Per-user (HKCU) registration of COM thumbnail & preview handlers for the BLP for
 
 No regsvr32, no System32 — we write only HKCU keys needed for Explorer to load:
 - Thumbnail provider (IThumbnailProvider) is in-proc.
-- Preview handler (IPreviewHandler) is hosted out-of-proc via prevhost (AppID).
+- Preview handler (IPreviewHandler) is hosted by prevhost via AppID mapping.
+- We also bind a PersistentHandler to force Explorer to route preview through us
+  even when PerceivedType=image might prefer a built-in handler.
 
 Docs:
   - Thumbnail providers: https://learn.microsoft.com/windows/win32/shell/thumbnail-providers
   - Preview handlers:   https://learn.microsoft.com/windows/win32/shell/preview-handlers
+  - Persistent handlers: https://learn.microsoft.com/windows/win32/shell/handlers
 
-Registry layout (effective, under HKCU):
+Effective registry (under HKCU):
 
 Software
 └─ Classes
    ├─ .blp
    │  (Default)        = WarRaft.BLP               ; only if empty
    │  Content Type     = image/x-blp
-    │ PerceivedType    = image
+   │  PerceivedType    = image
+   │  └─ PersistentHandler → {CLSID_BLP_PREVIEW}   ; forces preview lookup via PH
    ├─ WarRaft.BLP                                   ; our ProgID
    │  (Default)        = BLP Thumbnail/Preview Provider
    │  └─ ShellEx
@@ -46,10 +50,11 @@ Software
       └─ {CLSID_BLP_PREVIEW}
          (Default)     = BLP Preview Handler
          DisplayName   = @<dll>
-         AppID         = {6D2B5079-2F0B-48DD-AB7F-97CEC514D30B}   ; x64 prevhost
+         AppID         = {6D2B5079-2F0B-48DD-AB7F-97CEC514D30B}   ; x64 prevhost.exe host AppID
          DisableProcessIsolation = 1 (DWORD)
          └─ InprocServer32 → @=<dll>, ThreadingModel="Apartment"
          └─ Implemented Categories\{8895B1C6-...}
+         └─ PersistentAddinsRegistered\{8895B1C6-...} = {CLSID_BLP_PREVIEW}
 
 Software\Microsoft\Windows\CurrentVersion
 ├─ Explorer\ThumbnailHandlers          → ".blp" = {CLSID_BLP_THUMB}
@@ -117,12 +122,14 @@ fn install_inner() -> io::Result<()> {
             &root,
             r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
         )?;
+        log_ui("Approving shell extensions");
         approved.set(&thumb_clsid, FRIENDLY_NAME)?;
         approved.set(&preview_clsid, PREVIEW_FRIENDLY_NAME)?;
     }
 
     // --- Thumbnail CLSID node
     {
+        log_ui("Registering Thumbnail CLSID tree");
         let cls = Rk::open(&root, format!(r"Software\Classes\CLSID\{}", &thumb_clsid))?;
         cls.set_default(FRIENDLY_NAME)?;
         cls.set("DisableProcessIsolation", 1u32)?;
@@ -134,6 +141,7 @@ fn install_inner() -> io::Result<()> {
 
     // --- Preview CLSID node (out-of-proc via prevhost)
     {
+        log_ui("Registering Preview CLSID tree");
         let cls = Rk::open(&root, format!(r"Software\Classes\CLSID\{}", &preview_clsid))?;
         cls.set_default(PREVIEW_FRIENDLY_NAME)?;
         cls.set("DisplayName", format!("@{}", dll_path.display()))?;
@@ -143,10 +151,18 @@ fn install_inner() -> io::Result<()> {
         inproc.set_default(dll_path.as_os_str())?;
         inproc.set("ThreadingModel", "Apartment")?;
         let _ = cls.sub(&format!(r"Implemented Categories\{}", preview_catid))?;
+
+        // Bind the preview handler via PersistentAddinsRegistered (category → handler CLSID).
+        // Using the preview CLSID itself as the "persistent handler node" works fine.
+        log_ui("Binding Preview via PersistentAddinsRegistered");
+        let par = cls.sub("PersistentAddinsRegistered")?;
+        par.sub(&preview_catid)?
+            .set_default(preview_clsid.as_str())?;
     }
 
-    // --- .blp file type metadata
+    // --- .blp file type metadata (+ PersistentHandler that points to our preview CLSID)
     {
+        log_ui("Writing .blp file-type metadata");
         let extk = Rk::open(&root, format!(r"Software\Classes\{}", ext))?;
         match extk.get::<String>("Content Type") {
             Ok(s) if !s.trim_matches(char::from(0)).is_empty() && s != "image/x-blp" => {
@@ -156,7 +172,6 @@ fn install_inner() -> io::Result<()> {
                 extk.set("Content Type", "image/x-blp")?;
             }
         }
-        log_ui(format!(r"Setting value: {}\PerceivedType = image", ext));
         extk.set("PerceivedType", "image")?;
         match extk.get::<String>("") {
             Ok(s) if !s.trim_matches(char::from(0)).is_empty() => {
@@ -166,10 +181,22 @@ fn install_inner() -> io::Result<()> {
                 extk.set_default(DEFAULT_PROGID)?;
             }
         }
+
+        // --- PersistentHandler mapping
+        // Forces Explorer’s preview path resolution through our handler even if
+        // PerceivedType=image would prefer a built-in previewer.
+        // We use the preview CLSID as the PersistentHandler CLSID node.
+        log_ui(format!(
+            r"Binding {} \ PersistentHandler -> {}",
+            ext, preview_clsid
+        ));
+        extk.sub("PersistentHandler")?
+            .set_default(preview_clsid.as_str())?;
     }
 
     // --- ProgID + ShellEx bindings (primary binding point)
     {
+        log_ui("Binding ProgID ShellEx handlers");
         let pid = Rk::open(&root, format!(r"Software\Classes\{}", DEFAULT_PROGID))?;
         if pid
             .get::<String>("")
@@ -189,6 +216,7 @@ fn install_inner() -> io::Result<()> {
 
     // --- Bind also under .blp and SystemFileAssociations\.blp (secondary binding points)
     {
+        log_ui("Binding ShellEx under .blp and SystemFileAssociations");
         let ext_sx = Rk::open(&root, format!(r"Software\Classes\{}\ShellEx", ext))?;
         ext_sx
             .sub(&thumb_catid)?
@@ -210,21 +238,25 @@ fn install_inner() -> io::Result<()> {
     }
 
     // --- Explorer handler lists
-    Rk::open(
-        &root,
-        r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
-    )?
-    .set(ext, thumb_clsid.as_str())?;
-    Rk::open(
-        &root,
-        r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers",
-    )?
-    .set(preview_clsid.as_str(), PREVIEW_FRIENDLY_NAME)?;
+    {
+        log_ui("Updating Explorer handler lists");
+        Rk::open(
+            &root,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
+        )?
+        .set(ext, thumb_clsid.as_str())?;
+        Rk::open(
+            &root,
+            r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers",
+        )?
+        .set(preview_clsid.as_str(), PREVIEW_FRIENDLY_NAME)?;
+    }
 
-    // --- Enable Preview Pane handlers globally for this user (quality-of-life toggles)
+    // --- Enable Preview Pane handlers globally for this user (QoL toggles)
     if let Ok((adv, _)) =
         root.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced")
     {
+        log_ui("Setting Explorer Advanced toggles for previews/thumbnails");
         let _ = adv.set_value("ShowPreviewHandlers", &1u32);
         let _ = adv.set_value("IconsOnly", &0u32);
         let _ = adv.set_value("DisableThumbnails", &0u32);
