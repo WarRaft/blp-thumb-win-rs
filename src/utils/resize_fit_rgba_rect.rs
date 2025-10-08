@@ -1,4 +1,3 @@
-
 pub fn resize_fit_rgba_rect(
     src: &[u8],
     sw: u32,

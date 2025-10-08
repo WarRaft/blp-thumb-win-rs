@@ -59,7 +59,12 @@ fn generate_ico(src_png: &Path, out_ico: &Path) -> io::Result<()> {
 
     let data = fs::read(src_png)?;
     let img = image::load_from_memory(&data)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("decode {}: {e}", src_png.display())))?
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("decode {}: {e}", src_png.display()),
+            )
+        })?
         .to_rgba8();
 
     let (w, h) = (img.width(), img.height());
@@ -83,8 +88,12 @@ fn generate_ico(src_png: &Path, out_ico: &Path) -> io::Result<()> {
 
     let mut f = fs::File::create(out_ico)
         .map_err(|e| io::Error::new(e.kind(), format!("create {}: {e}", out_ico.display())))?;
-    dir.write(&mut f)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("write {}: {e}", out_ico.display())))?;
+    dir.write(&mut f).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("write {}: {e}", out_ico.display()),
+        )
+    })?;
     Ok(())
 }
 
@@ -107,7 +116,10 @@ fn main() {
         return;
     }
 
-    log_line(&report_path, "=== build.rs start (installer: Windows resources) ===");
+    log_line(
+        &report_path,
+        "=== build.rs start (installer: Windows resources) ===",
+    );
 
     // Absolute asset paths (stable in workspaces).
     let src_png = repo.join("assets/icon.png");
@@ -118,7 +130,10 @@ fn main() {
         log_line(&report_path, format!("Reusing ICO: {}", out_ico.display()));
     } else if src_png.exists() {
         match generate_ico(&src_png, &out_ico) {
-            Ok(_) => log_line(&report_path, format!("Generated ICO: {}", out_ico.display())),
+            Ok(_) => log_line(
+                &report_path,
+                format!("Generated ICO: {}", out_ico.display()),
+            ),
             Err(e) => {
                 log_line(
                     &report_path,
@@ -133,7 +148,10 @@ fn main() {
             }
         }
     } else {
-        log_line(&report_path, "No assets/icon.png found — icon embedding will be skipped.");
+        log_line(
+            &report_path,
+            "No assets/icon.png found — icon embedding will be skipped.",
+        );
     }
 
     // VERSIONINFO + ICON from Cargo env (always attempt).
@@ -177,7 +195,10 @@ fn main() {
 
     // Do not second-guess toolchain (RC/windres). If it's missing, we just log the error.
     match res.compile() {
-        Ok(_) => log_line(&report_path, "Resource embedding OK (VERSIONINFO + optional ICON)."),
+        Ok(_) => log_line(
+            &report_path,
+            "Resource embedding OK (VERSIONINFO + optional ICON).",
+        ),
         Err(e) => log_line(
             &report_path,
             format!(
