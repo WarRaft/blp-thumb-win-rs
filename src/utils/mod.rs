@@ -4,3 +4,4 @@ pub mod guid;
 pub mod resize_fit_rgba;
 pub mod resize_fit_rgba_rect;
 pub mod rgba_to_bgra_premul;
+pub mod rgba_to_bgra;
