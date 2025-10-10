@@ -9,19 +9,29 @@
 // ] }
 
 use crate::log::log;
+use std::sync::OnceLock;
 use std::{
     cell::{Cell, RefCell},
     ffi::c_void,
 };
+use windows::Win32::Foundation::{COLORREF, E_FAIL, HINSTANCE, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::Gdi::{BeginPaint, DRAW_TEXT_FORMAT, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint, FillRect, GetStockObject, HBRUSH, HDC, InvalidateRect, PAINTSTRUCT, SetBkMode, SetTextColor, TRANSPARENT, UpdateWindow, WHITE_BRUSH};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::WindowsAndMessaging::{CS_HREDRAW, CS_VREDRAW, DefWindowProcW, GetClientRect, HCURSOR, HICON, IDC_ARROW, LoadCursorW, RegisterClassW, WM_ERASEBKGND, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CLIPCHILDREN, WS_CLIPSIBLINGS};
 use windows::{
     Win32::{
-        Foundation::{E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL, E_POINTER},
-        Foundation::{GetLastError, HWND, RECT, SYSTEMTIME},
-        System::Ole::{IObjectWithSite_Impl, IOleWindow_Impl},
+        Foundation::{
+            E_INVALIDARG,
+            E_NOINTERFACE,
+            E_NOTIMPL,
+            E_POINTER,
+            GetLastError, //
+            HWND,
+            RECT,
+        },
         System::{
             Com::IStream,
-            Ole::{IObjectWithSite, IOleWindow},
-            SystemInformation::GetLocalTime,
+            Ole::{IObjectWithSite, IObjectWithSite_Impl, IOleWindow, IOleWindow_Impl},
         },
         UI::{
             Input::KeyboardAndMouse::{GetFocus, SetFocus},
@@ -29,20 +39,20 @@ use windows::{
                 IPreviewHandler, //
                 IPreviewHandler_Impl,
                 IPreviewHandlerFrame,
-                PropertiesSystem::{IInitializeWithStream, IInitializeWithStream_Impl},
+                PropertiesSystem::{
+                    IInitializeWithStream, //
+                    IInitializeWithStream_Impl,
+                },
             },
             WindowsAndMessaging::{
                 CreateWindowExW, //
                 DestroyWindow,
                 MSG,
-                SW_SHOW,
                 SWP_NOACTIVATE,
                 SWP_NOMOVE,
                 SWP_NOZORDER,
                 SetParent,
                 SetWindowPos,
-                SetWindowTextW,
-                ShowWindow,
                 WINDOW_EX_STYLE,
                 WINDOW_STYLE,
                 WS_CHILD,
@@ -52,18 +62,93 @@ use windows::{
     },
     core::{
         BOOL,
-        HRESULT,
+        GUID,
+        HRESULT, //
         IUnknown,
         Interface,
         PCWSTR,
+        Ref,
         Result,
-        implement, //
+        implement,
         w,
     },
 };
-use windows_core::{GUID, Ref};
 
 const STATIC_CLASSW: PCWSTR = w!("Static");
+static WNDCLASS_ATOM: OnceLock<u16> = OnceLock::new();
+const CLASS_NAME: PCWSTR = w!("BlpPreviewWnd");
+
+unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    match msg {
+        WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            let hdc: HDC = BeginPaint(hwnd, &mut ps);
+
+            let mut rc = RECT::default();
+            GetClientRect(hwnd, &mut rc);
+
+            // фон
+            FillRect(hdc, &rc, HBRUSH(GetStockObject(WHITE_BRUSH).0));
+
+            // текст
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, COLORREF(0)); // RGB(0,0,0)
+
+            let mut wtxt: Vec<u16> = "BLP demo preview (custom Win32)".encode_utf16().collect();
+            // DrawTextW в windows 0.62 берёт &mut [u16], БЕЗ отдельного length и БЕЗ PCWSTR
+            let fmt = DRAW_TEXT_FORMAT(DT_CENTER.0 | DT_VCENTER.0 | DT_SINGLELINE.0);
+            DrawTextW(hdc, &mut wtxt, &mut rc, fmt);
+
+            EndPaint(hwnd, &ps);
+            return LRESULT(0);
+        }
+        WM_ERASEBKGND => {
+            // скажем системе, что фон мы уже закрасили — меньше мерцаний
+            return LRESULT(1);
+        }
+        WM_SIZE => {
+            // сигнатура: InvalidateRect(Some(hwnd), None, bool)
+            InvalidateRect(Some(hwnd), None, true);
+            return LRESULT(0);
+        }
+        _ => {}
+    }
+    DefWindowProcW(hwnd, msg, w, l)
+}
+
+fn ensure_class_registered() -> Result<()> {
+    if WNDCLASS_ATOM.get().is_some() {
+        return Ok(());
+    }
+
+    unsafe {
+        // HINSTANCE через GetModuleHandleW(None)
+        let hinst = HINSTANCE(GetModuleHandleW(None).ok().map(|h| h.0).unwrap_or_default());
+
+        let wc = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(wndproc),
+            hInstance: hinst,
+            hIcon: HICON::default(),
+            hCursor: {
+                let cur: HCURSOR = LoadCursorW(None, IDC_ARROW)?;
+                cur
+            },
+            hbrBackground: HBRUSH(GetStockObject(WHITE_BRUSH).0),
+            lpszClassName: CLASS_NAME,
+            ..Default::default()
+        };
+
+        let atom: u16 = RegisterClassW(&wc);
+        if atom == 0 {
+            return Err(windows::core::Error::from(E_FAIL));
+        }
+        // OnceLock без try_init на стабильном Rust
+        let _ = WNDCLASS_ATOM.set(atom);
+    }
+
+    Ok(())
+}
 
 #[implement(IObjectWithSite, IPreviewHandler, IOleWindow, IInitializeWithStream)]
 pub struct BlpPreviewHandler {
@@ -74,19 +159,10 @@ pub struct BlpPreviewHandler {
     stream: RefCell<Option<IStream>>,
 }
 
-#[inline]
-fn rw(rc: &RECT) -> i32 {
-    rc.right - rc.left
-}
-#[inline]
-fn rh(rc: &RECT) -> i32 {
-    rc.bottom - rc.top
-}
-
 #[allow(non_snake_case)]
 impl BlpPreviewHandler {
     pub fn new() -> Self {
-        log("🔥BlpPreviewHandler::new");
+        log("BlpPreviewHandler::new");
         Self {
             hwnd_parent: Cell::new(HWND::default()), //
             hwnd_preview: Cell::new(HWND::default()),
@@ -95,75 +171,18 @@ impl BlpPreviewHandler {
             stream: RefCell::new(None),
         }
     }
-
-    fn update_bounds(&self) {
-        let hwnd_preview = self.hwnd_preview.get();
-        if hwnd_preview.is_invalid() {
-            return;
-        }
-        unsafe {
-            let rc = self.rc_parent.get();
-            let _ = SetWindowPos(
-                self.hwnd_preview.get(),
-                None, // ← NULL в C++
-                rc.left,
-                rc.top,
-                rw(&rc),
-                rh(&rc),
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-        }
-    }
-
-    fn format_local_timestamp() -> Vec<u16> {
-        // GetLocalTime() у тебя — нуль-аргументный враппер
-        let st: SYSTEMTIME = unsafe { GetLocalTime() };
-        let s = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-        s.encode_utf16().chain(std::iter::once(0)).collect()
-    }
-
-    fn create_preview_window(&self) -> Result<()> {
-        let parent = self.hwnd_parent.get();
-        if parent.is_invalid() {
-            return Err(E_INVALIDARG.into());
-        }
-
-        let rc = self.rc_parent.get();
-        unsafe {
-            let hwnd = CreateWindowExW(
-                WINDOW_EX_STYLE(0), //
-                STATIC_CLASSW,
-                PCWSTR::null(),
-                WINDOW_STYLE::default() | WS_CHILD | WS_VISIBLE,
-                rc.left,
-                rc.top,
-                rw(&rc),
-                rh(&rc),
-                Some(parent),
-                None,
-                None,
-                None,
-            )?;
-
-            self.hwnd_preview.set(hwnd);
-
-            let wts = Self::format_local_timestamp();
-            SetWindowTextW(hwnd, PCWSTR(wts.as_ptr()))?;
-
-            let _ = ShowWindow(hwnd, SW_SHOW);
-        }
-        Ok(())
-    }
 }
 
 #[allow(non_snake_case)]
 impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
     fn SetSite(&self, p_unknown_site: Ref<'_, IUnknown>) -> Result<()> {
+        log("BlpPreviewHandler::SetSite");
         *self.site.borrow_mut() = p_unknown_site.clone();
         Ok(())
     }
 
     fn GetSite(&self, riid: *const GUID, ppv: *mut *mut c_void) -> Result<()> {
+        log("BlpPreviewHandler::GetSite");
         unsafe {
             if ppv.is_null() {
                 return Err(E_POINTER.into());
@@ -187,45 +206,162 @@ impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
 #[allow(non_snake_case)]
 impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
     fn SetWindow(&self, hwnd: HWND, prc: *const RECT) -> Result<()> {
-        if hwnd.is_invalid() || prc.is_null() {
-            return Err(E_INVALIDARG.into());
+        log("BlpPreviewHandler::SetWindow (enter)");
+
+        // --- проверка входных параметров ---
+        log(&format!("  hwnd=0x{:X}, prc={:?}", hwnd.0 as usize, prc));
+        if hwnd.is_invalid() {
+            log("  hwnd invalid -> return S_OK");
+            return Ok(());
         }
-        self.hwnd_parent.set(hwnd);
-        unsafe {
-            self.rc_parent.set(*prc);
+        if prc.is_null() {
+            log("  prc null -> return S_OK");
+            return Ok(());
         }
 
-        // если превью уже создано — перепривяжем и обновим размеры
+        // --- кешируем родителя и прямоугольник ---
+        let rc = unsafe { *prc };
+        log(&format!("  cache parent HWND(0x{:X}) rc=({}, {}, {}, {})", hwnd.0 as usize, rc.left, rc.top, rc.right, rc.bottom));
+        self.hwnd_parent.set(hwnd);
+        self.rc_parent.set(rc);
+
+        // --- если превью уже есть, перепривяжем и обновим размер ---
         let preview = self.hwnd_preview.get();
         if !preview.is_invalid() {
             unsafe {
-                let _ = SetParent(preview, Some(hwnd));
+                log(&format!("  preview exists -> HWND(0x{:X}) -> SetParent(...)", preview.0 as usize));
+                match SetParent(preview, Some(hwnd)) {
+                    Ok(new_parent) => {
+                        log(&format!("  SetParent => OK, new parent HWND(0x{:X})", new_parent.0 as usize));
+                    }
+                    Err(e) => {
+                        log(&format!("  SetParent => ERR hr=0x{:08X}", e.code().0 as u32));
+                    }
+                }
+
+                let width = rc.right - rc.left;
+                let height = rc.bottom - rc.top;
+                log(&format!("  SetWindowPos: left={}, top={}, width={}, height={}", rc.left, rc.top, width, height));
+
+                match SetWindowPos(
+                    preview,
+                    Some(HWND::default()), //
+                    rc.left,
+                    rc.top,
+                    width,
+                    height,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE,
+                ) {
+                    Ok(_) => log("  SetWindowPos => OK"),
+                    Err(e) => log(&format!("  SetWindowPos => ERR hr=0x{:08X}", e.code().0 as u32)),
+                };
             }
-            self.update_bounds();
+        } else {
+            log("  preview HWND invalid (none created yet)");
         }
+
+        log("  BlpPreviewHandler::SetWindow (exit, return S_OK)");
         Ok(())
     }
 
     fn SetRect(&self, prc: *const RECT) -> Result<()> {
+        log("BlpPreviewHandler::SetRect (enter)");
+
+        // --- проверка входного указателя ---
         if prc.is_null() {
+            log("  prc is NULL -> E_INVALIDARG");
             return Err(E_INVALIDARG.into());
         }
-        unsafe {
-            self.rc_parent.set(*prc);
+
+        // --- кешируем прямоугольник ---
+        let rc = unsafe { *prc };
+        self.rc_parent.set(rc);
+        log(&format!("  cached rc=({}, {}, {}, {}), size={}x{}", rc.left, rc.top, rc.right, rc.bottom, rc.right - rc.left, rc.bottom - rc.top));
+
+        // --- если превью уже создано, обновляем его размер ---
+        let preview = self.hwnd_preview.get();
+        if !preview.is_invalid() {
+            let width = rc.right - rc.left;
+            let height = rc.bottom - rc.top;
+            log(&format!("  preview HWND(0x{:X}) exists -> SetWindowPos({}, {}, {}, {})", preview.0 as usize, rc.left, rc.top, width, height));
+
+            unsafe {
+                match SetWindowPos(
+                    preview,
+                    Some(HWND::default()),
+                    rc.left, // SWP_NOMOVE — позиция игнорируется, но логируем для полноты
+                    rc.top,
+                    width,
+                    height,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                ) {
+                    Ok(_) => log("  SetWindowPos => OK"),
+                    Err(e) => log(&format!("  SetWindowPos => ERR hr=0x{:08X}", e.code().0 as u32)),
+                }
+            }
+        } else {
+            log("  preview HWND invalid (no window yet)");
         }
-        self.update_bounds();
+
+        log("  BlpPreviewHandler::SetRect (exit, return S_OK)");
         Ok(())
     }
 
     fn DoPreview(&self) -> Result<()> {
-        // создаём окно один раз, только если есть stream
-        if self.hwnd_preview.get().is_invalid() && self.stream.borrow().is_some() {
-            self.create_preview_window()?;
+        log("BlpPreviewHandler::DoPreview (custom hwnd)");
+
+        let parent = self.hwnd_parent.get();
+        if parent.is_invalid() {
+            log("  parent invalid -> E_INVALIDARG");
+            return Err(E_INVALIDARG.into());
         }
+
+        ensure_class_registered()?;
+
+        // Берём кэшированный rc, но даже если там 0×0 — СОЗДАЁМ окно!
+        let rc = self.rc_parent.get();
+        let mut w = rc.right - rc.left;
+        let mut h = rc.bottom - rc.top;
+        if w <= 0 || h <= 0 {
+            // На этом этапе Explorer обычно ещё не успел вызвать SetRect —
+            // создаём маленькое окно, чтобы хост увидел "готово".
+            w = 1;
+            h = 1;
+            log("  rc is empty at DoPreview -> creating 1x1 placeholder (will be resized in SetRect)");
+        } else {
+            log(&format!("  rc at DoPreview: {}x{}", w, h));
+        }
+
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0), //
+                CLASS_NAME,
+                PCWSTR::null(),
+                WINDOW_STYLE((WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN).0),
+                0,
+                0,
+                w,
+                h,
+                Some(parent),
+                None,
+                None,
+                None,
+            )?
+        };
+
+        log(&format!("  created preview HWND=0x{:X} ({}x{})", hwnd.0 as usize, w, h));
+        self.hwnd_preview.set(hwnd);
+
+        unsafe {
+            UpdateWindow(hwnd);
+        }
+
+        log("  DoPreview => S_OK");
         Ok(())
     }
 
     fn Unload(&self) -> Result<()> {
+        log("BlpPreviewHandler::Unload");
         *self.stream.borrow_mut() = None;
 
         let hwnd = self.hwnd_preview.get();
@@ -240,6 +376,7 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
     }
 
     fn SetFocus(&self) -> Result<()> {
+        log("BlpPreviewHandler::SetFocus");
         let hwnd = self.hwnd_preview.get();
         if !hwnd.is_invalid() {
             unsafe {
@@ -250,6 +387,7 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
     }
 
     fn QueryFocus(&self) -> Result<HWND> {
+        log("BlpPreviewHandler::QueryFocus");
         unsafe {
             let h = GetFocus();
             if !h.is_invalid() {
@@ -263,6 +401,7 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
     }
 
     fn TranslateAccelerator(&self, pmsg: *const MSG) -> Result<()> {
+        log("BlpPreviewHandler::TranslateAccelerator");
         // достаём владёжную копию site (AddRef) и отпускаем borrow
         if let Some(site) = self.site.borrow().as_ref().cloned() {
             unsafe {
@@ -278,11 +417,13 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
 #[allow(non_snake_case)]
 impl IOleWindow_Impl for BlpPreviewHandler_Impl {
     fn GetWindow(&self) -> Result<HWND> {
+        log("BlpPreviewHandler::GetWindow");
         Ok(self.hwnd_parent.get())
     }
 
     #[allow(non_snake_case)]
     fn ContextSensitiveHelp(&self, _fEnterMode: BOOL) -> Result<()> {
+        log("BlpPreviewHandler::ContextSensitiveHelp");
         Err(E_NOTIMPL.into())
     }
 }
@@ -290,6 +431,7 @@ impl IOleWindow_Impl for BlpPreviewHandler_Impl {
 impl IInitializeWithStream_Impl for BlpPreviewHandler_Impl {
     #[allow(non_snake_case)]
     fn Initialize(&self, pStream: Ref<'_, IStream>, _grfMode: u32) -> Result<()> {
+        log("BlpPreviewHandler::Initialize");
         // Initialize может вызываться повторно — просто перезаписываем
         *self.stream.borrow_mut() = pStream.cloned();
         Ok(())
