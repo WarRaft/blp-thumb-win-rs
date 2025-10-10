@@ -8,9 +8,16 @@
 //   "Win32_UI_WindowsAndMessaging",
 // ] }
 
+use crate::log::log;
+use std::{
+    cell::{Cell, RefCell},
+    ffi::c_void,
+};
 use windows::{
     Win32::{
+        Foundation::{E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL, E_POINTER},
         Foundation::{GetLastError, HWND, RECT, SYSTEMTIME},
+        System::Ole::{IObjectWithSite_Impl, IOleWindow_Impl},
         System::{
             Com::IStream,
             Ole::{IObjectWithSite, IOleWindow},
@@ -18,11 +25,16 @@ use windows::{
         },
         UI::{
             Input::KeyboardAndMouse::{GetFocus, SetFocus},
-            Shell::{IPreviewHandler, IPreviewHandlerFrame, PropertiesSystem::IInitializeWithStream},
+            Shell::{
+                IPreviewHandler, //
+                IPreviewHandler_Impl,
+                IPreviewHandlerFrame,
+                PropertiesSystem::{IInitializeWithStream, IInitializeWithStream_Impl},
+            },
             WindowsAndMessaging::{
                 CreateWindowExW, //
                 DestroyWindow,
-                HMENU,
+                MSG,
                 SW_SHOW,
                 SWP_NOACTIVATE,
                 SWP_NOMOVE,
@@ -39,218 +51,247 @@ use windows::{
         },
     },
     core::{
-        BOOL, //
+        BOOL,
         HRESULT,
         IUnknown,
         Interface,
         PCWSTR,
         Result,
-        implement,
+        implement, //
         w,
     },
 };
+use windows_core::{GUID, Ref};
 
 const STATIC_CLASSW: PCWSTR = w!("Static");
 
+#[implement(IObjectWithSite, IPreviewHandler, IOleWindow, IInitializeWithStream)]
+pub struct BlpPreviewHandler {
+    hwnd_parent: Cell<HWND>,
+    hwnd_preview: Cell<HWND>,
+    rc_parent: Cell<RECT>,
+    site: RefCell<Option<IUnknown>>,
+    stream: RefCell<Option<IStream>>,
+}
+
 #[inline]
-fn rect_width(rc: &RECT) -> i32 {
+fn rw(rc: &RECT) -> i32 {
     rc.right - rc.left
 }
 #[inline]
-fn rect_height(rc: &RECT) -> i32 {
+fn rh(rc: &RECT) -> i32 {
     rc.bottom - rc.top
-}
-
-/// BLP Preview Handler (тестовый): рисует таймстамп.
-#[implement(IObjectWithSite, IPreviewHandler, IOleWindow, IInitializeWithStream)]
-pub struct BlpPreviewHandler {
-    // счётчик ссылок берёт на себя #[implement]
-    hwnd_parent: HWND,
-    hwnd_preview: HWND,
-    rc_parent: RECT,
-    site: Option<IUnknown>,
-    stream: Option<IStream>,
 }
 
 #[allow(non_snake_case)]
 impl BlpPreviewHandler {
     pub fn new() -> Self {
-        Self { hwnd_parent: HWND::default(), hwnd_preview: HWND::default(), rc_parent: RECT { left: 0, top: 0, right: 0, bottom: 0 }, site: None, stream: None }
+        log("🔥BlpPreviewHandler::new");
+        Self {
+            hwnd_parent: Cell::new(HWND::default()), //
+            hwnd_preview: Cell::new(HWND::default()),
+            rc_parent: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
+            site: RefCell::new(None),
+            stream: RefCell::new(None),
+        }
     }
 
-    /// Создаёт дочернее окно и выводит строку с таймстампом.
-    fn create_preview_window(&mut self) -> Result<()> {
+    fn update_bounds(&self) {
+        let hwnd_preview = self.hwnd_preview.get();
+        if hwnd_preview.is_invalid() {
+            return;
+        }
         unsafe {
-            // создаём простейший STATIC control
-            let style: WINDOW_STYLE = (WS_CHILD | WS_VISIBLE).into();
-            let ex: WINDOW_EX_STYLE = WINDOW_EX_STYLE(0);
+            let rc = self.rc_parent.get();
+            let _ = SetWindowPos(
+                self.hwnd_preview.get(),
+                None, // ← NULL в C++
+                rc.left,
+                rc.top,
+                rw(&rc),
+                rh(&rc),
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
 
+    fn format_local_timestamp() -> Vec<u16> {
+        // GetLocalTime() у тебя — нуль-аргументный враппер
+        let st: SYSTEMTIME = unsafe { GetLocalTime() };
+        let s = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn create_preview_window(&self) -> Result<()> {
+        let parent = self.hwnd_parent.get();
+        if parent.is_invalid() {
+            return Err(E_INVALIDARG.into());
+        }
+
+        let rc = self.rc_parent.get();
+        unsafe {
             let hwnd = CreateWindowExW(
-                ex,
+                WINDOW_EX_STYLE(0), //
                 STATIC_CLASSW,
-                PCWSTR::null(), // текст зададим позже
-                style,
-                self.rc_parent.left,
-                self.rc_parent.top,
-                rect_width(&self.rc_parent),
-                rect_height(&self.rc_parent),
-                Some(self.hwnd_parent),
-                Some(HMENU::default()),
+                PCWSTR::null(),
+                WINDOW_STYLE::default() | WS_CHILD | WS_VISIBLE,
+                rc.left,
+                rc.top,
+                rw(&rc),
+                rh(&rc),
+                Some(parent),
+                None,
                 None,
                 None,
             )?;
 
-            if hwnd.is_invalid() {
-                return Err(HRESULT::from_win32(GetLastError().0).into());
-            }
+            self.hwnd_preview.set(hwnd);
 
-            self.hwnd_preview = hwnd;
+            let wts = Self::format_local_timestamp();
+            SetWindowTextW(hwnd, PCWSTR(wts.as_ptr()))?;
 
-            // формируем строку времени
-            let ts = format_local_timestamp();
-            let widestr: Vec<u16> = ts.encode_utf16().chain(std::iter::once(0)).collect();
-            SetWindowTextW(self.hwnd_preview, PCWSTR(widestr.as_ptr()))?;
-
-            let _ = ShowWindow(self.hwnd_preview, SW_SHOW);
+            let _ = ShowWindow(hwnd, SW_SHOW);
         }
         Ok(())
     }
+}
 
-    /// Обновить позицию/размер дочернего окна при ресайзе панели.
-    fn update_preview_bounds(&self) {
-        if !self.hwnd_preview.is_invalid() {
+#[allow(non_snake_case)]
+impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
+    fn SetSite(&self, p_unknown_site: Ref<'_, IUnknown>) -> Result<()> {
+        *self.site.borrow_mut() = p_unknown_site.clone();
+        Ok(())
+    }
+
+    fn GetSite(&self, riid: *const GUID, ppv: *mut *mut c_void) -> Result<()> {
+        unsafe {
+            if ppv.is_null() {
+                return Err(E_POINTER.into());
+            }
+            *ppv = std::ptr::null_mut();
+        }
+
+        // берём копию без блокировки borrow
+        let owned = self.site.borrow().clone();
+        let Some(current) = owned else {
+            return Err(E_NOINTERFACE.into());
+        };
+
+        unsafe {
+            current.query(riid, ppv).ok()?;
+        }
+        Ok(())
+    }
+}
+
+#[allow(non_snake_case)]
+impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
+    fn SetWindow(&self, hwnd: HWND, prc: *const RECT) -> Result<()> {
+        if hwnd.is_invalid() || prc.is_null() {
+            return Err(E_INVALIDARG.into());
+        }
+        self.hwnd_parent.set(hwnd);
+        unsafe {
+            self.rc_parent.set(*prc);
+        }
+
+        // если превью уже создано — перепривяжем и обновим размеры
+        let preview = self.hwnd_preview.get();
+        if !preview.is_invalid() {
             unsafe {
-                let _ = SetWindowPos(
-                    self.hwnd_preview, //
-                    Some(HWND::default()),
-                    self.rc_parent.left,
-                    self.rc_parent.top,
-                    rect_width(&self.rc_parent),
-                    rect_height(&self.rc_parent),
-                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-                );
+                let _ = SetParent(preview, Some(hwnd));
             }
+            self.update_bounds();
         }
-    }
-
-    // ===== IObjectWithSite =====
-    fn SetSite(&mut self, punk_site: Option<&IUnknown>) -> Result<()> {
-        self.site = punk_site.cloned();
         Ok(())
     }
 
-    fn GetSite(&self, riid: *const windows::core::GUID, ppv: *mut *mut core::ffi::c_void) -> HRESULT {
-        unsafe { if let Some(site) = &self.site { site.query(riid, ppv) } else { windows::Win32::Foundation::E_FAIL } }
-    }
-
-    // ===== IOleWindow =====
-    fn GetWindow(&self) -> Result<HWND> {
-        Ok(self.hwnd_parent)
-    }
-
-    fn ContextSensitiveHelp(&self, _f_enter_mode: BOOL) -> Result<()> {
-        // не требуется
-        Err(windows::Win32::Foundation::E_NOTIMPL.into())
-    }
-
-    // ===== IInitializeWithStream =====
-    fn Initialize(&mut self, p_stream: &IStream, _grf_mode: u32) -> Result<()> {
-        // Может вызываться повторно — перезаписываем
-        self.stream = Some(p_stream.clone());
-        Ok(())
-    }
-
-    // ===== IPreviewHandler =====
-    fn SetWindow(&mut self, hwnd: HWND, prc: *const RECT) -> Result<()> {
+    fn SetRect(&self, prc: *const RECT) -> Result<()> {
+        if prc.is_null() {
+            return Err(E_INVALIDARG.into());
+        }
         unsafe {
-            if !hwnd.is_invalid() && !prc.is_null() {
-                self.hwnd_parent = hwnd;
-                self.rc_parent = *prc;
+            self.rc_parent.set(*prc);
+        }
+        self.update_bounds();
+        Ok(())
+    }
 
-                if !self.hwnd_preview.is_invalid() {
-                    // если уже создан — обновим parent и размер
-                    SetParent(self.hwnd_preview, Some(self.hwnd_parent))?;
-                    self.update_preview_bounds();
-                }
-            }
+    fn DoPreview(&self) -> Result<()> {
+        // создаём окно один раз, только если есть stream
+        if self.hwnd_preview.get().is_invalid() && self.stream.borrow().is_some() {
+            self.create_preview_window()?;
         }
         Ok(())
     }
 
-    fn SetRect(&mut self, prc: *const RECT) -> Result<()> {
-        unsafe {
-            if prc.is_null() {
-                return Err(windows::Win32::Foundation::E_INVALIDARG.into());
+    fn Unload(&self) -> Result<()> {
+        *self.stream.borrow_mut() = None;
+
+        let hwnd = self.hwnd_preview.get();
+        if !hwnd.is_invalid() {
+            unsafe {
+                DestroyWindow(hwnd)?;
             }
-            self.rc_parent = *prc;
+            self.hwnd_preview.set(HWND::default());
         }
-        self.update_preview_bounds();
+
         Ok(())
     }
 
     fn SetFocus(&self) -> Result<()> {
-        unsafe {
-            if !self.hwnd_preview.is_invalid() {
-                SetFocus(Some(self.hwnd_preview)).expect("TODO: panic message");
-                Ok(())
-            } else {
-                // как в примере: S_FALSE, но в windows-rs Result проще вернуть Ok(()).
-                Ok(())
+        let hwnd = self.hwnd_preview.get();
+        if !hwnd.is_invalid() {
+            unsafe {
+                let _ = SetFocus(Some(hwnd));
             }
         }
+        Ok(())
     }
 
     fn QueryFocus(&self) -> Result<HWND> {
         unsafe {
             let h = GetFocus();
-            if !h.is_invalid() { Ok(h) } else { Err(HRESULT::from_win32(GetLastError().0).into()) }
+            if !h.is_invalid() {
+                Ok(h)
+            } else {
+                let code = GetLastError();
+                let hr = HRESULT::from_win32(code.0);
+                Err(windows::core::Error::new(hr, "GetFocus failed"))
+            }
         }
     }
 
-    fn TranslateAccelerator(&self, pmsg: *const windows::Win32::UI::WindowsAndMessaging::MSG) -> Result<()> {
-        // Пробрасываем хосту (как в C++-образце)
-        if let Some(site) = &self.site {
+    fn TranslateAccelerator(&self, pmsg: *const MSG) -> Result<()> {
+        // достаём владёжную копию site (AddRef) и отпускаем borrow
+        if let Some(site) = self.site.borrow().as_ref().cloned() {
             unsafe {
                 if let Ok(frame) = site.cast::<IPreviewHandlerFrame>() {
-                    // Возвращаем S_FALSE, если не обработано — но windows-rs Result не несёт S_FALSE.
-                    // Поэтому аккуратно вызываем и возвращаем Ok(()) независимо от результата: хост разберётся.
                     let _ = frame.TranslateAccelerator(pmsg);
                 }
             }
         }
         Ok(())
     }
+}
 
-    fn DoPreview(&mut self) -> Result<()> {
-        // В реальности вы бы парсили BLP из self.stream и рисовали.
-        // Для тестов: создаём окно и печатаем текущий таймстамп.
-        if !self.hwnd_preview.is_invalid() && self.stream.is_some() {
-            self.create_preview_window()?;
-        }
-        Ok(())
+#[allow(non_snake_case)]
+impl IOleWindow_Impl for BlpPreviewHandler_Impl {
+    fn GetWindow(&self) -> Result<HWND> {
+        Ok(self.hwnd_parent.get())
     }
 
-    fn Unload(&mut self) -> Result<()> {
-        self.stream = None;
-        if !self.hwnd_preview.is_invalid() {
-            unsafe {
-                DestroyWindow(self.hwnd_preview)?;
-            }
-            self.hwnd_preview = HWND::default();
-        }
-        Ok(())
+    #[allow(non_snake_case)]
+    fn ContextSensitiveHelp(&self, _fEnterMode: BOOL) -> Result<()> {
+        Err(E_NOTIMPL.into())
     }
 }
 
-// ---------- Вспомогательное форматирование времени ----------
-fn format_local_timestamp() -> String {
-    unsafe {
-        let mut st = SYSTEMTIME::default();
-        GetLocalTime();
-        // Пример: 2025-10-09 23:15:42.123
-        format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}", //
-            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds
-        )
+impl IInitializeWithStream_Impl for BlpPreviewHandler_Impl {
+    #[allow(non_snake_case)]
+    fn Initialize(&self, pStream: Ref<'_, IStream>, _grfMode: u32) -> Result<()> {
+        // Initialize может вызываться повторно — просто перезаписываем
+        *self.stream.borrow_mut() = pStream.cloned();
+        Ok(())
     }
 }
