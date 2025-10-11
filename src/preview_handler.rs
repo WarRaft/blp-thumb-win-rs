@@ -23,18 +23,23 @@ use std::{
     sync::{Mutex, OnceLock},
     time::Instant,
 };
-use windows::Win32::UI::WindowsAndMessaging::{CREATESTRUCTW, WINDOWPOS, WM_CREATE, WM_MOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCPAINT, WM_SHOWWINDOW, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING};
 use windows::{
     Win32::{
-        Foundation::{COLORREF, E_FAIL, HINSTANCE, LPARAM, LRESULT, S_FALSE, WPARAM},
         Foundation::{
+            COLORREF,
+            E_FAIL,
             E_INVALIDARG,
             E_NOINTERFACE,
             E_NOTIMPL,
             E_POINTER,
             GetLastError, //
+            HINSTANCE,
             HWND,
+            LPARAM,
+            LRESULT,
             RECT,
+            S_FALSE,
+            WPARAM,
         },
         Graphics::Gdi::{
             BeginPaint, //
@@ -88,23 +93,68 @@ use windows::{
                 IPreviewHandler, //
                 IPreviewHandler_Impl,
                 IPreviewHandlerFrame,
-                IShellItem,
                 PropertiesSystem::{
                     IInitializeWithStream, //
                     IInitializeWithStream_Impl,
                 },
-                SIGDN_FILESYSPATH,
                 ShellExecuteW,
             },
-            WindowsAndMessaging::{CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, HCURSOR, HICON, IDC_ARROW, LoadCursorW, MSG, RegisterClassW, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetCursor, SetParent, SetWindowPos, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP, WM_PAINT, WM_PRINTCLIENT, WM_SETCURSOR, WM_SIZE, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE},
+            WindowsAndMessaging::{
+                CREATESTRUCTW, //
+                CS_HREDRAW,
+                CS_VREDRAW,
+                CreateWindowExW,
+                DefWindowProcW,
+                DestroyWindow,
+                GetClassInfoExW,
+                GetClientRect,
+                HCURSOR,
+                HICON,
+                IDC_ARROW,
+                LoadCursorW,
+                MSG,
+                RegisterClassW,
+                SET_WINDOW_POS_FLAGS,
+                SW_SHOWNORMAL,
+                SWP_NOACTIVATE,
+                SWP_NOMOVE,
+                SWP_NOZORDER,
+                SetCursor,
+                SetParent,
+                SetWindowPos,
+                WINDOW_EX_STYLE,
+                WINDOW_STYLE,
+                WINDOWPOS,
+                WM_CREATE,
+                WM_DESTROY,
+                WM_ERASEBKGND,
+                WM_LBUTTONUP,
+                WM_MOVE,
+                WM_NCCALCSIZE,
+                WM_NCCREATE,
+                WM_NCPAINT,
+                WM_PAINT,
+                WM_PRINTCLIENT,
+                WM_SETCURSOR,
+                WM_SHOWWINDOW,
+                WM_SIZE,
+                WM_WINDOWPOSCHANGED,
+                WM_WINDOWPOSCHANGING,
+                WNDCLASSEXW,
+                WNDCLASSW,
+                WS_CHILD,
+                WS_CLIPCHILDREN,
+                WS_CLIPSIBLINGS,
+                WS_VISIBLE,
+            },
         },
     },
     core::{
         BOOL,
         GUID,
-        HRESULT, //
+        HRESULT,
         IUnknown,
-        Interface,
+        Interface, //
         PCWSTR,
         Ref,
         Result,
@@ -113,10 +163,10 @@ use windows::{
     },
 };
 
-static WNDCLASS_ATOM: OnceLock<u16> = OnceLock::new();
 const CLASS_NAME: PCWSTR = w!("BlpPreviewWnd");
 static PREVIEW_BITMAPS: OnceLock<Mutex<HashMap<isize, PreviewBitmap>>> = OnceLock::new();
 static PREVIEW_PATHS: OnceLock<Mutex<HashMap<isize, Vec<u16>>>> = OnceLock::new();
+static CLASS_ATOM: OnceLock<u16> = OnceLock::new();
 
 #[derive(Clone, Copy)]
 struct PreviewBitmap {
@@ -215,24 +265,31 @@ fn request_redraw(hwnd: HWND, reason: &str) {
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     match msg {
         WM_PAINT => {
-            log(&format!("wndproc(HWND=0x{:X}) WM_PAINT begin", hwnd.0 as usize));
+            use std::time::Instant;
+
+            let t0 = Instant::now();
             let mut ps = PAINTSTRUCT::default();
-            let hdc: HDC = unsafe { BeginPaint(hwnd, &mut ps) };
 
-            let mut rc = RECT::default();
-            unsafe {
-                let _ = GetClientRect(hwnd, &mut rc);
-            }
-            log(&format!("  WM_PAINT client rect=({}, {}, {}, {})", rc.left, rc.top, rc.right, rc.bottom));
+            unsafe { BeginPaint(hwnd, &mut ps) };
+            log(&format!("wndproc(HWND=0x{:X}) WM_PAINT begin (rcPaint=({}, {}, {}, {}))", hwnd.0 as usize, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right, ps.rcPaint.bottom));
 
+            let t_draw = Instant::now();
             unsafe {
-                draw_preview_contents(hwnd, hdc, &rc);
+                draw_preview_contents(hwnd, ps.hdc, &ps.rcPaint);
+            }
+            let draw_ms = t_draw.elapsed().as_millis();
+            log(&format!("  draw_preview_contents: {} ms", draw_ms));
+
+            let ok = unsafe { EndPaint(hwnd, &ps).as_bool() };
+            if ok {
+                log(&format!("wndproc(HWND=0x{:X}) WM_PAINT EndPaint => OK", hwnd.0 as usize));
+            } else {
+                let gle = unsafe { GetLastError().0 };
+                log(&format!("wndproc(HWND=0x{:X}) WM_PAINT EndPaint => FAIL GetLastError=0x{:08X}", hwnd.0 as usize, gle));
             }
 
-            unsafe {
-                let _ = EndPaint(hwnd, &ps);
-            }
-            log(&format!("wndproc(HWND=0x{:X}) WM_PAINT end", hwnd.0 as usize));
+            let total_ms = t0.elapsed().as_millis();
+            log(&format!("wndproc(HWND=0x{:X}) WM_PAINT end (total={} ms)", hwnd.0 as usize, total_ms));
             return LRESULT(0);
         }
 
@@ -364,29 +421,34 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             }
         }
 
-        // === Non Client
+        // === Non-Client section ===
+        // The "non-client area" refers to parts of a window drawn and managed by the system,
+        // not by your application: borders, title bar, scroll bars, system buttons, etc.
+        // A preview handler window (WS_CHILD) normally has no non-client area,
+        // so we suppress these messages to avoid redundant painting or flicker.
         WM_NCCREATE => {
-            // lParam → *const CREATESTRUCTW
+            // Sent before WM_CREATE to initialize the window's non-client area.
+            // lParam points to a CREATESTRUCTW with creation parameters.
             log(&format!("wndproc(HWND=0x{:X}) WM_NCCREATE lp=0x{:X}", hwnd.0 as usize, l.0 as usize));
             if l.0 != 0 {
-                // просто для трассировки, без разыменования полей
                 let cs = l.0 as *const CREATESTRUCTW;
-                log(&format!("  CREATESTRUCTW*={:p}", cs));
+                log(&format!("  CREATESTRUCTW* = {:p}", cs));
             }
         }
 
         WM_NCCALCSIZE => {
-            // wParam: 1 => lParam указывает на NCCALCSIZE_PARAMS; 0 => RECT*
-            log(&format!("wndproc(HWND=0x{:X}) WM_NCCALCSIZE wParam=0x{:X} lParam=0x{:X}", hwnd.0 as usize, w.0, l.0 as usize));
+            // Sent when the size and position of the client area must be calculated.
+            // For child windows (like preview handlers) there is no frame, so we just ignore it.
+            log(&format!("wndproc(HWND=0x{:X}) WM_NCCALCSIZE (ignored)", hwnd.0 as usize));
+            return LRESULT(0);
         }
 
         WM_NCPAINT => {
-            // wParam: HRGN (region) или 1 (перерисовать всё); lParam обычно 0
-            let rg = w.0; // 0 | 1 | HRGN
-            log(&format!("wndproc(HWND=0x{:X}) WM_NCPAINT hrgn={}{}", hwnd.0 as usize, if rg == 1 { "ALL" } else { "0x" }, if rg == 1 { String::new() } else { format!("{:X}", rg) }));
-            // Ничего кастомного не рисуем → пусть система/ DWM сделают своё
-            // Верни 0 и дай базовой процедуре дорисовать:
-            return DefWindowProcW(hwnd, msg, w, l).into();
+            // Sent when the system needs to paint the non-client area
+            // (e.g., borders, caption, scroll bars). For a borderless child window,
+            // there is nothing to paint, so we intercept and return 0.
+            log(&format!("wndproc(HWND=0x{:X}) WM_NCPAINT (ignored)", hwnd.0 as usize));
+            return LRESULT(0);
         }
 
         // === Uncatched
@@ -480,41 +542,6 @@ unsafe fn draw_preview_contents(hwnd: HWND, hdc: HDC, rc: &RECT) {
         log(&format!("  draw_preview_contents: DrawTextW => {}", painted));
     }
 }
-
-fn ensure_class_registered() -> Result<()> {
-    if WNDCLASS_ATOM.get().is_some() {
-        return Ok(());
-    }
-
-    unsafe {
-        // HINSTANCE через GetModuleHandleW(None)
-        let hinst = HINSTANCE(GetModuleHandleW(None).ok().map(|h| h.0).unwrap_or_default());
-
-        let wc = WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(wndproc),
-            hInstance: hinst,
-            hIcon: HICON::default(),
-            hCursor: {
-                let cur: HCURSOR = LoadCursorW(None, IDC_ARROW)?;
-                cur
-            },
-            hbrBackground: HBRUSH(GetStockObject(WHITE_BRUSH).0),
-            lpszClassName: CLASS_NAME,
-            ..Default::default()
-        };
-
-        let atom: u16 = RegisterClassW(&wc);
-        if atom == 0 {
-            return Err(windows::core::Error::from(E_FAIL));
-        }
-        // OnceLock без try_init на стабильном Rust
-        let _ = WNDCLASS_ATOM.set(atom);
-    }
-
-    Ok(())
-}
-
 #[implement(IObjectWithSite, IPreviewHandler, IOleWindow, IInitializeWithStream)]
 pub struct BlpPreviewHandler {
     hwnd_parent: Cell<HWND>,
@@ -558,36 +585,6 @@ impl BlpPreviewHandler_Impl {
         }
     }
 
-    fn update_path_from_shell_item(&self, site: &IUnknown) {
-        match site.cast::<IShellItem>() {
-            Ok(item) => match unsafe { item.GetDisplayName(SIGDN_FILESYSPATH) } {
-                Ok(pwstr) => {
-                    if pwstr.is_null() {
-                        log("  IShellItem::GetDisplayName returned NULL");
-                        self.set_file_path(None, "site");
-                    } else {
-                        let path = unsafe { pwstr.to_string().unwrap_or_default() };
-                        unsafe {
-                            CoTaskMemFree(Some(pwstr.0 as _));
-                        }
-                        if path.is_empty() {
-                            log("  IShellItem::GetDisplayName returned empty string");
-                            self.set_file_path(None, "site");
-                        } else {
-                            self.set_file_path(Some(path), "site");
-                        }
-                    }
-                }
-                Err(err) => {
-                    log(&format!("  IShellItem::GetDisplayName failed hr=0x{:08X}", err.code().0 as u32));
-                }
-            },
-            Err(err) => {
-                log(&format!("  site cast to IShellItem failed hr=0x{:08X}", err.code().0 as u32));
-            }
-        }
-    }
-
     fn update_path_from_stream(&self) {
         let path = self.stream.borrow().as_ref().and_then(|stream| {
             let mut stat = STATSTG::default();
@@ -617,30 +614,6 @@ impl BlpPreviewHandler_Impl {
         });
         if let Some(path) = path {
             self.set_file_path(Some(path), "stream");
-        }
-    }
-
-    fn update_frame_from_site(&self, site: &IUnknown) {
-        match site.cast::<IPreviewHandlerFrame>() {
-            Ok(frame) => {
-                log("  site cast to IPreviewHandlerFrame => OK");
-                *self.frame.borrow_mut() = Some(frame.clone());
-                match unsafe { frame.GetWindowContext() } {
-                    Ok(info) => {
-                        log(&format!("  IPreviewHandlerFrame::GetWindowContext => OK (cAccelEntries={})", info.cAccelEntries));
-                        if info.haccel.0.is_null() {
-                            log("  frame context haccel=NULL");
-                        }
-                    }
-                    Err(err) => {
-                        log(&format!("  IPreviewHandlerFrame::GetWindowContext => ERR hr=0x{:08X}", err.code().0 as u32));
-                    }
-                }
-            }
-            Err(err) => {
-                log(&format!("  site cast to IPreviewHandlerFrame failed hr=0x{:08X}", err.code().0 as u32));
-                self.frame.borrow_mut().take();
-            }
         }
     }
 
@@ -727,36 +700,37 @@ impl BlpPreviewHandler_Impl {
 
 #[allow(non_snake_case)]
 impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
-    fn SetSite(&self, p_unknown_site: Ref<'_, IUnknown>) -> Result<()> {
-        log("BlpPreviewHandler::SetSite");
-        let mut slot = self.site.borrow_mut();
-        if let Some(site) = p_unknown_site.as_ref() {
-            log(&format!("  site ptr={:?}", site.as_raw()));
-            if slot.is_some() {
-                log("  replacing cached site");
-            }
-            *slot = Some(site.clone());
-            log("  site cached (AddRef held)");
-            drop(slot);
-            self.update_frame_from_site(site);
-            self.update_path_from_shell_item(site);
-            self.update_path_from_stream();
-        } else {
-            log("  site ptr=NULL -> clearing cached site");
-            let had_site = slot.take().is_some();
-            if had_site {
-                log("  previous site released");
-            } else {
-                log("  no cached site to clear");
-            }
-            drop(slot);
-            if self.frame.borrow_mut().take().is_some() {
-                log("  cached frame released");
-            }
-            if self.file_path.borrow_mut().take().is_some() {
-                log("  cached file path cleared");
-            }
+    /// Connects this preview handler to the host **site** (`IObjectWithSite::SetSite` non-null overload).
+    ///
+    /// Purpose:
+    /// - Cache the site interface for later use while the preview is active.
+    /// - Optionally obtain `IPreviewHandlerFrame` for focus/accelerator routing (not required to render).
+    ///
+    /// Must be lightweight:
+    /// - No I/O, no window creation, no painting, no blocking calls.
+    /// - Just (re)cache interfaces and return.
+    ///
+    /// Parameters:
+    /// - `site`: non-null site object provided by the host; cloning the `Ref` increments COM refcount.
+    ///
+    /// Call order (typical):
+    /// `Initialize` → **`SetSite`** → `SetWindow` → `DoPreview` → `SetRect` (0+) → `Unload`.
+    #[allow(non_snake_case)]
+    fn SetSite(&self, site: Ref<'_, IUnknown>) -> Result<()> {
+        log("BlpPreviewHandler::SetSite (enter, non-null)");
+
+        if self.frame.borrow().is_some() {
+            log("  releasing previous IPreviewHandlerFrame");
+            *self.frame.borrow_mut() = None;
         }
+        if self.site.borrow().is_some() {
+            log("  releasing previous site");
+            *self.site.borrow_mut() = None;
+        }
+
+        *self.site.borrow_mut() = site.clone();
+
+        log("BlpPreviewHandler::SetSite (exit, return S_OK)");
         Ok(())
     }
 
@@ -769,7 +743,6 @@ impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
             *ppv = std::ptr::null_mut();
         }
 
-        // берём копию без блокировки borrow
         let owned = self.site.borrow().clone();
         let Some(current) = owned else {
             log("  no cached site -> E_NOINTERFACE");
@@ -790,230 +763,320 @@ impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
 }
 
 #[allow(non_snake_case)]
+#[allow(non_snake_case)]
 impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
-    fn SetWindow(&self, hwnd: HWND, prc: *const RECT) -> Result<()> {
+    /// Sets the host window for the preview handler (IPreviewHandler::SetWindow).
+    ///
+    /// # Contract (from MS Docs)
+    /// - **Purpose:** The host (Explorer/prevhost) passes a **parent HWND** and the initial **display RECT**
+    ///   for the preview content. This method is the *staging step* — no heavy work or rendering here.
+    /// - **Call order:** `Initialize` → `SetSite` → **`SetWindow`** → `DoPreview` → `SetRect` (0+ times) → `Unload`.
+    /// - **What you SHOULD do here:**
+    ///   - Validate parameters.
+    ///   - Cache the parent `HWND` and the `RECT` into your handler state.
+    ///   - If your child window already exists, optionally **reparent** it to the new parent.
+    ///     Geometry changes are expected to be applied later by **`SetRect`**.
+    /// - **What you SHOULD NOT do here:**
+    ///   - Do not create the child window (create it in **`DoPreview`**).
+    ///   - Do not perform I/O/decoding or trigger synchronous paints (`UpdateWindow`).
+    /// - **Special case:** If `parent` is invalid (null), treat it as a **teardown signal**: destroy your
+    ///   child window and clear cached state. The handler object may remain alive.
+    ///
+    /// This implementation logs every step to help diagnose ordering and re-entrancy issues.
+    /// It only records the parent/rect and (if present) reparents the existing child window.
+    /// Any move/resize will be handled by **SetRect** that follows.
+    ///
+    /// Returns `S_OK` on success, `E_INVALIDARG` if `prc` is null when `parent` is valid.
+    fn SetWindow(&self, parent: HWND, prc: *const RECT) -> Result<()> {
         log("BlpPreviewHandler::SetWindow (enter)");
+        log(&format!("  in: parent=0x{:X}, prc={:p}", parent.0 as usize, prc));
 
-        // --- проверка входных параметров ---
-        log(&format!("  hwnd=0x{:X}, prc={:?}", hwnd.0 as usize, prc));
-        if hwnd.is_invalid() {
-            log("  hwnd invalid -> tearing down preview window");
+        // Teardown path: host signals no parent → destroy child & clear state
+        if parent.is_invalid() {
+            log("  parent HWND is invalid → teardown");
+            // Clear cached parent/rect
             self.hwnd_parent.set(HWND::default());
             self.rc_parent
                 .set(RECT { left: 0, top: 0, right: 0, bottom: 0 });
 
-            let preview = self.hwnd_preview.get();
-            if preview.is_invalid() {
-                log("  preview already cleared");
+            // Destroy existing child window if any
+            let child = self.hwnd_preview.get();
+            if child.is_invalid() {
+                log("  preview HWND already cleared");
             } else {
                 unsafe {
-                    match DestroyWindow(preview) {
-                        Ok(_) => log(&format!("  DestroyWindow(HWND=0x{:X}) => OK", preview.0 as usize)),
-                        Err(e) => log(&format!("  DestroyWindow(HWND=0x{:X}) => ERR hr=0x{:08X}", preview.0 as usize, e.code().0 as u32)),
+                    match DestroyWindow(child) {
+                        Ok(_) => log(&format!("  DestroyWindow(HWND=0x{:X}) => OK", child.0 as usize)),
+                        Err(e) => log(&format!("  DestroyWindow(HWND=0x{:X}) => ERR hr=0x{:08X}", child.0 as usize, e.code().0 as u32)),
                     }
                 }
-                preview_store_remove(preview);
+                preview_store_remove(child);
                 self.hwnd_preview.set(HWND::default());
             }
-            log("  reset cached RECT and HWND");
+
             log("  BlpPreviewHandler::SetWindow (exit, teardown, return S_OK)");
             return Ok(());
         }
+
+        // For a valid parent, prc must be non-null
         if prc.is_null() {
-            log("  prc null -> return E_INVALIDARG");
+            log("  prc is NULL while parent is valid → E_INVALIDARG");
             return Err(E_INVALIDARG.into());
         }
 
-        // --- кешируем родителя и прямоугольник ---
+        // Cache parent + rect (no creation, no painting here)
         let rc = unsafe { *prc };
-        log(&format!("  cache parent HWND(0x{:X}) rc=({}, {}, {}, {})", hwnd.0 as usize, rc.left, rc.top, rc.right, rc.bottom));
-        self.hwnd_parent.set(hwnd);
+        log(&format!("  cache: parent=0x{:X}, rc=({}, {}, {}, {}) (w={} h={})", parent.0 as usize, rc.left, rc.top, rc.right, rc.bottom, rc.right - rc.left, rc.bottom - rc.top));
+        self.hwnd_parent.set(parent);
         self.rc_parent.set(rc);
 
-        // --- если превью уже есть, перепривяжем и обновим размер ---
-        let preview = self.hwnd_preview.get();
-        if !preview.is_invalid() {
+        // If the child already exists, just reparent it; geometry is handled by SetRect
+        let child = self.hwnd_preview.get();
+        log(&format!("  cached preview HWND = 0x{:X} (invalid={})", child.0 as usize, child.is_invalid()));
+        if !child.is_invalid() {
             unsafe {
-                log(&format!("  preview exists -> HWND(0x{:X}) -> SetParent(...)", preview.0 as usize));
-                match SetParent(preview, Some(hwnd)) {
+                match SetParent(child, Some(parent)) {
                     Ok(new_parent) => {
-                        log(&format!("  SetParent => OK, new parent HWND(0x{:X})", new_parent.0 as usize));
+                        log(&format!("  SetParent => OK, new parent=0x{:X}", new_parent.0 as usize));
                     }
                     Err(e) => {
                         log(&format!("  SetParent => ERR hr=0x{:08X}", e.code().0 as u32));
                     }
                 }
 
-                let width = rc.right - rc.left;
-                let height = rc.bottom - rc.top;
-                log(&format!("  SetWindowPos: left={}, top={}, width={}, height={}", rc.left, rc.top, width, height));
-
+                // Keep geometry unchanged here; SetRect will supply the authoritative position/size.
+                // SWP_NOMOVE ensures we don't override left/top before SetRect arrives.
                 match SetWindowPos(
-                    preview,
-                    Some(HWND::default()), //
-                    rc.left,
-                    rc.top,
-                    width,
-                    height,
+                    child,
+                    Some(HWND::default()),
+                    0,
+                    0,                  // ignored due to NOMOVE
+                    rc.right - rc.left, // width (ignored if you prefer defer size to SetRect as well)
+                    rc.bottom - rc.top, // height
                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE,
                 ) {
-                    Ok(_) => log("  SetWindowPos => OK"),
-                    Err(e) => log(&format!("  SetWindowPos => ERR hr=0x{:08X}", e.code().0 as u32)),
-                };
+                    Ok(_) => log("  SetWindowPos (reparent keep-pos) => OK"),
+                    Err(e) => log(&format!("  SetWindowPos (reparent keep-pos) => ERR hr=0x{:08X}", e.code().0 as u32)),
+                }
             }
         } else {
-            log("  preview HWND invalid (none created yet)");
+            log("  preview HWND not created yet (will be created in DoPreview)");
         }
 
         log("  BlpPreviewHandler::SetWindow (exit, return S_OK)");
         Ok(())
     }
 
+    /// Applies the host-provided display rectangle (IPreviewHandler::SetRect).
+    ///
+    /// ## Contract (per Microsoft Docs)
+    /// - The host calls `SetRect` to supply/adjust the **authoritative** position & size
+    ///   for your preview child window.
+    /// - You **must** resize/reposition your child window to this rect (no heuristics),
+    ///   and paint **only inside** this area.
+    /// - `SetRect` may arrive **before or after** `DoPreview`. If your child window does
+    ///   not exist yet, just **cache** the rect and apply it when the window is created.
+    /// - Return `E_INVALIDARG` if `prc == NULL`.
+    ///
+    /// ## Behavior here
+    /// 1) Validate `prc`, cache the rect in `self.rc_parent`.
+    /// 2) If a child window exists, call `SetWindowPos(child, …, left, top, w, h, SWP_NOZORDER|SWP_NOACTIVATE)`.
+    ///    **Do not** use `SWP_NOMOVE`.
+    /// 3) Request a repaint with `InvalidateRect(child, None, false)` (no `UpdateWindow`).
+    ///
+    /// All Win32 calls that return `Result<()>` are logged with OK/ERR branches.
+    #[allow(non_snake_case)]
     fn SetRect(&self, prc: *const RECT) -> Result<()> {
         log("BlpPreviewHandler::SetRect (enter)");
 
-        // --- проверка входного указателя ---
+        // --- 1) Validate pointer ---
         if prc.is_null() {
-            log("  prc is NULL -> E_INVALIDARG");
-            return Err(E_INVALIDARG.into());
+            log("  prc is NULL → E_INVALIDARG");
+            return Err(windows::core::Error::new(HRESULT(1i32), "SetRect: prc is NULL")); // E_INVALIDARG
         }
 
-        // --- кешируем прямоугольник ---
+        // --- 2) Cache the rect ---
         let rc = unsafe { *prc };
+        let mut w = rc.right - rc.left;
+        let mut h = rc.bottom - rc.top;
+        if w < 0 {
+            w = 0;
+        }
+        if h < 0 {
+            h = 0;
+        }
+
         self.rc_parent.set(rc);
-        let width = rc.right - rc.left;
-        let height = rc.bottom - rc.top;
+        log(&format!("  cached rc=({}, {}, {}, {}) size={}×{}", rc.left, rc.top, rc.right, rc.bottom, w, h));
+
+        // --- 3) Apply to the existing child (if any) ---
+        let child: HWND = self.hwnd_preview.get();
+        if child.is_invalid() {
+            log("  child HWND not created yet → will apply when DoPreview creates it");
+            log("BlpPreviewHandler::SetRect (exit, return S_OK)");
+            return Ok(());
+        }
+
+        // SetWindowPos with move + size (authoritative), no z-order/no activate
+        let flags: SET_WINDOW_POS_FLAGS = SWP_NOZORDER | SWP_NOACTIVATE;
         log(&format!(
-            "  cached rc=({}, {}, {}, {}), size={}x{}",
-            rc.left, //
+            "  SetWindowPos(hwnd=0x{:X}, x={}, y={}, cx={}, cy={}, flags={:?})",
+            child.0 as usize, //
+            rc.left,
             rc.top,
-            rc.right,
-            rc.bottom,
-            width,
-            height
+            w,
+            h,
+            flags
         ));
 
-        // --- если превью уже создано, обновляем его размер ---
-        let preview = self.hwnd_preview.get();
-        log(&format!("  preview HWND = 0x{:X} (invalid={})", preview.0 as usize, preview.is_invalid()));
-
-        if !preview.is_invalid() {
-            log(&format!("  preview HWND(0x{:X}) exists -> SetWindowPos({}, {}, {}, {})", preview.0 as usize, rc.left, rc.top, width, height));
-
-            unsafe {
-                match SetWindowPos(
-                    preview,
-                    Some(HWND::default()),
-                    rc.left, // SWP_NOMOVE — позиция игнорируется, но логируем для полноты
-                    rc.top,
-                    width,
-                    height,
-                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-                ) {
-                    Ok(_) => log("  SetWindowPos => OK"),
-                    Err(e) => log(&format!("  SetWindowPos => ERR hr=0x{:08X}", e.code().0 as u32)),
-                }
+        unsafe {
+            match SetWindowPos(child, Some(HWND::default()), rc.left, rc.top, w, h, flags) {
+                Ok(()) => log("  SetWindowPos => OK"),
+                Err(e) => log(&format!("  SetWindowPos => ERR hr=0x{:08X}", e.code().0 as u32)),
             }
-            request_redraw(preview, "SetRect");
-        } else {
-            log("  preview HWND invalid (no window yet)");
         }
 
-        log("  BlpPreviewHandler::SetRect (exit, return S_OK)");
+        // --- 4) Request repaint (no UpdateWindow) ---
+        unsafe {
+            log(format!(
+                "  InvalidateRect(hwnd=0x{:X}) => {}",
+                child.0 as usize, //
+                InvalidateRect(Some(child), None, false).as_bool()
+            ));
+        }
+
+        log("BlpPreviewHandler::SetRect (exit, return S_OK)");
         Ok(())
     }
 
+    /// Starts the preview UI (IPreviewHandler::DoPreview).
+    ///
+    /// ## Contract (per Microsoft Docs)
+    /// - `SetWindow` precedes this and supplies the parent `HWND` and an initial RECT.
+    /// - If the preview child window does not exist yet, create it **after this call**.
+    /// - **Paint only** inside the area provided by `SetWindow`/`SetRect`.
+    /// - Hosts often call `SetRect` *after* `DoPreview`; if the cached rect is empty,
+    ///   create the child at **(0,0)** with size **0×0** and let `SetRect` resize it.
+    /// - Do **not** block the host’s message loop; **do not** call `UpdateWindow`.
+    /// - Keep UI minimal; no modal dialogs/toolbars. Unhandled messages → `DefWindowProcW`.
+    ///
+    /// ## Logging
+    /// - Every Win32 call that returns `Result<()>` is logged for OK/ERR with the HRESULT.
+    /// - Synchronous errors that use `GetLastError` are converted via `HRESULT::from_win32`.
+    #[allow(non_snake_case)]
     fn DoPreview(&self) -> Result<()> {
-        log("BlpPreviewHandler::DoPreview (custom hwnd)");
+        log("BlpPreviewHandler::DoPreview (enter)");
 
-        let current_preview = self.hwnd_preview.get();
-        if !current_preview.is_invalid() {
-            log(&format!("  existing preview HWND detected=0x{:X} -> will destroy and recreate", current_preview.0 as usize));
+        // 0) Destroy previous child, if present
+        let prev = self.hwnd_preview.get();
+        if !prev.is_invalid() {
+            log(&format!("  existing child HWND=0x{:X} → DestroyWindow", prev.0 as usize));
             unsafe {
-                match DestroyWindow(current_preview) {
-                    Ok(_) => log("  DestroyWindow(existing preview) => OK"),
-                    Err(e) => log(&format!("  DestroyWindow(existing preview) => ERR hr=0x{:08X}", e.code().0 as u32)),
+                match DestroyWindow(prev) {
+                    Ok(()) => log("  DestroyWindow => OK"),
+                    Err(e) => log(&format!("  DestroyWindow => ERR hr=0x{:08X}", e.code().0 as u32)),
                 }
             }
-            preview_store_remove(current_preview);
+            preview_store_remove(prev);
             self.hwnd_preview.set(HWND::default());
-        } else {
-            log("  no existing preview HWND cached");
         }
 
+        // 1) Validate parent from SetWindow
         let parent = self.hwnd_parent.get();
         if parent.is_invalid() {
-            log("  parent invalid -> E_INVALIDARG");
-            return Err(E_INVALIDARG.into());
+            log("  parent HWND invalid → E_INVALIDARG");
+            return Err(windows::core::Error::new(HRESULT(1i32), "parent HWND invalid"));
         }
 
-        ensure_class_registered()?;
+        // 2) Ensure the preview window class is registered (inline, one-time). No cursor tweaks.
+        if CLASS_ATOM.get().is_none() {
+            log("  [class] ensuring preview window class");
+            unsafe {
+                let hinst = HINSTANCE(GetModuleHandleW(None).ok().map(|h| h.0).unwrap_or_default());
+                log(&format!("  [class] hInstance=0x{:X}", hinst.0 as usize));
 
-        // Берём кэшированный rc, но даже если там 0×0 — СОЗДАЁМ окно!
-        let rc = self.rc_parent.get();
-        let mut w = rc.right - rc.left;
-        let mut h = rc.bottom - rc.top;
-        if w <= 0 || h <= 0 {
-            // На этом этапе Explorer обычно ещё не успел вызвать SetRect —
-            // создаём маленькое окно, чтобы хост увидел "готово".
-            w = 1;
-            h = 1;
-            log("  rc is empty at DoPreview -> creating 1x1 placeholder (will be resized in SetRect)");
+                // Already registered in this process?
+                let mut info = WNDCLASSEXW::default();
+                info.cbSize = size_of::<WNDCLASSEXW>() as u32;
+                if GetClassInfoExW(Some(hinst), CLASS_NAME, &mut info as *mut _).is_ok() {
+                    log("  [class] already registered (GetClassInfoExW => OK)");
+                    let _ = CLASS_ATOM.set(1); // any non-zero marker
+                } else {
+                    // Register fresh class: no non-client, no cursor meddling
+                    let wc = WNDCLASSW {
+                        style: CS_HREDRAW | CS_VREDRAW,
+                        lpfnWndProc: Some(wndproc),
+                        hInstance: hinst,
+                        hIcon: HICON::default(),
+                        hCursor: HCURSOR::default(), // do NOT touch cursor
+                        hbrBackground: HBRUSH(GetStockObject(WHITE_BRUSH).0),
+                        lpszClassName: CLASS_NAME,
+                        ..Default::default()
+                    };
+
+                    let atom = RegisterClassW(&wc);
+                    if atom == 0 {
+                        let gle = GetLastError().0;
+                        let hr = HRESULT::from_win32(gle);
+                        log(&format!("  [class] RegisterClassW => FAIL GLE=0x{:08X} hr=0x{:08X}", gle, hr.0 as u32));
+                        return Err(windows::core::Error::new(hr, "RegisterClassW failed"));
+                    }
+                    log(&format!("  [class] RegisterClassW => OK atom=0x{:X}", atom as u32));
+                    let _ = CLASS_ATOM.set(atom);
+                }
+            }
         } else {
-            log(&format!("  rc at DoPreview: {}x{}", w, h));
+            log("  [class] preview class already initialized");
         }
 
-        let stream_ptr = self
-            .stream
-            .borrow()
-            .as_ref()
-            .map(|s| format!("{:?}", s.as_raw()))
-            .unwrap_or_else(|| "None".to_string());
-        log(&format!("  cached IStream={}", stream_ptr));
-
-        let hwnd = unsafe {
-            log(&format!("  CreateWindowExW(parent=0x{:X}, size={}x{})", parent.0 as usize, w, h));
-            CreateWindowExW(
-                WINDOW_EX_STYLE(0), //
-                CLASS_NAME,
-                PCWSTR::null(),
-                WINDOW_STYLE((WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN).0),
-                0,
-                0,
-                w,
-                h,
-                Some(parent),
-                None,
-                None,
-                None,
-            )?
+        // 3) Pick initial geometry: 0×0 until SetRect arrives
+        let rc: RECT = self.rc_parent.get();
+        let (x, y, w, h) = if rc.right <= rc.left || rc.bottom <= rc.top {
+            log("  cached rect empty → create child at (0,0) size 0×0; SetRect will resize");
+            (0, 0, 0, 0)
+        } else {
+            let ww = rc.right - rc.left;
+            let hh = rc.bottom - rc.top;
+            log(&format!("  using cached rect: pos=({}, {}), size={}×{}", rc.left, rc.top, ww, hh));
+            (rc.left, rc.top, ww, hh)
         };
 
-        log(&format!("  created preview HWND=0x{:X} ({}x{})", hwnd.0 as usize, w, h));
+        // 4) Create the child window (client-only; no borders)
+        let hwnd = unsafe {
+            log(&format!("  CreateWindowExW(parent=0x{:X}, pos=({}, {}), size={}×{})", parent.0 as usize, x, y, w, h));
+            match CreateWindowExW(WINDOW_EX_STYLE(0), CLASS_NAME, PCWSTR::null(), WINDOW_STYLE((WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN).0), x, y, w, h, Some(parent), None, None, None) {
+                Ok(h) => h,
+                Err(e) => {
+                    log(&format!("  CreateWindowExW => ERR hr=0x{:08X}", e.code().0 as u32));
+                    return Err(e);
+                }
+            }
+        };
+        log(&format!("  created child HWND=0x{:X}", hwnd.0 as usize));
         self.hwnd_preview.set(hwnd);
 
+        // 5) Load/decode preview resources (fast sync is fine; heavy → offload and PostMessage)
         match self.load_bitmap_for_hwnd(hwnd) {
-            Ok(_) => log("  load_bitmap_for_hwnd => OK"),
-            Err(err) => {
-                log(&format!("  load_bitmap_for_hwnd => ERR hr=0x{:08X}", err.code().0 as u32));
-            }
+            Ok(()) => log("  load_bitmap_for_hwnd => OK"),
+            Err(e) => log(&format!("  load_bitmap_for_hwnd => ERR hr=0x{:08X}", e.code().0 as u32)),
         }
 
+        // 6) Request repaint (no UpdateWindow). InvalidateRect returns Result<()>, log both branches.
         unsafe {
-            let res = UpdateWindow(hwnd);
-            if res.as_bool() {
-                log("  UpdateWindow => OK");
-            } else {
-                let err = GetLastError();
-                log(&format!("  UpdateWindow => ERR GetLastError=0x{:08X}", err.0));
-            }
+            log(format!(
+                " InvalidateRect(hwnd=0x{:X}) => {}",
+                hwnd.0 as usize, //
+                InvalidateRect(Some(hwnd), None, false).as_bool()
+            ));
         }
 
-        if let Err(err) = self.SetFocus() {
-            log(&format!("  SetFocus (auto) failed hr=0x{:08X}", err.code().0 as u32));
+        // 7) Optional: set focus; SetFocus returns previous HWND
+        unsafe {
+            let prev = SetFocus(Some(hwnd))?;
+            log(&format!("  SetFocus(HWND=0x{:X}) previous=0x{:X}", hwnd.0 as usize, prev.0 as usize));
         }
 
-        log("  DoPreview => S_OK");
+        log("BlpPreviewHandler::DoPreview (exit, return S_OK)");
         Ok(())
     }
 
@@ -1021,8 +1084,6 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         log("BlpPreviewHandler::Unload");
         if self.stream.borrow().is_some() {
             log("  clearing cached stream");
-        } else {
-            log("  no cached stream to clear");
         }
         *self.stream.borrow_mut() = None;
         if self.file_path.borrow_mut().take().is_some() {
@@ -1045,7 +1106,6 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         } else {
             log("  hwnd_preview already invalid");
         }
-
         Ok(())
     }
 
@@ -1062,8 +1122,6 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
                     Ok(info) => log(&format!("  frame context after SetFocus: cAccelEntries={}", info.cAccelEntries)),
                     Err(err) => log(&format!("  frame GetWindowContext failed hr=0x{:08X}", err.code().0 as u32)),
                 }
-            } else {
-                log("  SetFocus: frame not available");
             }
         } else {
             log("  hwnd_preview invalid -> nothing to focus");
@@ -1087,20 +1145,25 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         }
     }
 
+    /// Minimal forwarding; not required for just drawing a bitmap.
+    /// We simply best-effort forward to the host frame if present.
+    #[allow(non_snake_case)]
     fn TranslateAccelerator(&self, pmsg: *const MSG) -> Result<()> {
-        log("BlpPreviewHandler::TranslateAccelerator");
+        log("BlpPreviewHandler::TranslateAccelerator (enter)");
         log(&format!("  MSG ptr={:?}", pmsg));
+
         if let Some(frame) = self.frame.borrow().as_ref() {
             unsafe {
-                if let Err(err) = frame.TranslateAccelerator(pmsg) {
-                    log(&format!("  IPreviewHandlerFrame::TranslateAccelerator => ERR hr=0x{:08X}", err.code().0 as u32));
-                } else {
-                    log("  IPreviewHandlerFrame::TranslateAccelerator invoked");
+                match frame.TranslateAccelerator(pmsg) {
+                    Ok(_) => log("  frame.TranslateAccelerator forwarded"),
+                    Err(e) => log(&format!("  frame.TranslateAccelerator => ERR hr=0x{:08X}", e.code().0 as u32)),
                 }
             }
         } else {
-            log("  frame not set -> S_OK without forwarding");
+            log("  no IPreviewHandlerFrame cached → nothing to forward (OK for image preview)");
         }
+
+        log("BlpPreviewHandler::TranslateAccelerator (exit, return S_OK)");
         Ok(())
     }
 }
