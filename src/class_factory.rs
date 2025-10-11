@@ -12,10 +12,7 @@ use windows_implement::implement;
 
 #[inline]
 fn iid_name(iid: &GUID) -> &'static str {
-    use windows::Win32::UI::Shell::{
-        IInitializeWithItem, IPreviewHandler, IThumbnailProvider,
-        PropertiesSystem::IInitializeWithFile, PropertiesSystem::IInitializeWithStream,
-    };
+    use windows::Win32::UI::Shell::{IInitializeWithItem, IPreviewHandler, IThumbnailProvider, PropertiesSystem::IInitializeWithFile, PropertiesSystem::IInitializeWithStream};
     use windows_core::Interface;
     if *iid == <IUnknown as Interface>::IID {
         "IUnknown"
@@ -68,9 +65,7 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
         ppv: *mut *mut c_void,
     ) -> windows::core::Result<()> {
         use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER};
-        use windows::Win32::UI::Shell::PropertiesSystem::{
-            IInitializeWithFile, IInitializeWithStream,
-        };
+        use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithStream};
         use windows::Win32::UI::Shell::{IInitializeWithItem, IPreviewHandler, IThumbnailProvider};
         use windows::core::{Error, IUnknown, Interface};
 
@@ -83,12 +78,7 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
             let g = gref.to_braced_upper();
             format!("riid={} {}", name, g)
         };
-        log(format!(
-            "IClassFactory::CreateInstance kind={:?} outer=(aggregation unsupported) {} ppv={}",
-            self.kind,
-            riid_log,
-            ptr_hex(ppv),
-        ));
+        log(format!("IClassFactory::CreateInstance kind={:?} outer=(aggregation unsupported) {} ppv={}", self.kind, riid_log, ptr_hex(ppv),));
 
         if ppv.is_null() || riid.is_null() {
             log("IClassFactory::CreateInstance result=E_POINTER");
@@ -159,16 +149,10 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
     fn LockServer(&self, f_lock: BOOL) -> windows::core::Result<()> {
         if f_lock.as_bool() {
             let new = DLL_LOCK_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
-            log(format!(
-                "IClassFactory::LockServer lock=true new_lock_count={}",
-                new
-            ));
+            log(format!("IClassFactory::LockServer lock=true new_lock_count={}", new));
         } else {
             let new = DLL_LOCK_COUNT.fetch_sub(1, Ordering::SeqCst) - 1;
-            log(format!(
-                "IClassFactory::LockServer lock=false new_lock_count={}",
-                new
-            ));
+            log(format!("IClassFactory::LockServer lock=false new_lock_count={}", new));
         }
         Ok(())
     }

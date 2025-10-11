@@ -3,10 +3,7 @@ use crate::utils::notify_shell_assoc::notify_shell_assoc;
 use crate::utils::regedit::Rk;
 use blp_thumb_win::log::log;
 use blp_thumb_win::utils::guid::GuidExt;
-use blp_thumb_win::{
-    CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME,
-    PREVIEW_FRIENDLY_NAME, SHELL_PREVIEW_HANDLER_CATID, SHELL_THUMB_HANDLER_CATID,
-};
+use blp_thumb_win::{CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, FRIENDLY_NAME, PREVIEW_FRIENDLY_NAME, SHELL_PREVIEW_HANDLER_CATID, SHELL_THUMB_HANDLER_CATID};
 use std::path::PathBuf;
 use std::{env, fs, io};
 use winreg::RegKey;
@@ -39,11 +36,7 @@ fn install_inner() -> io::Result<()> {
             e
         })?;
         let path = dir.join("blp_thumb_win.dll");
-        log(format!(
-            "Writing DLL {} ({} bytes)",
-            path.display(),
-            DLL_BYTES.len()
-        ));
+        log(format!("Writing DLL {} ({} bytes)", path.display(), DLL_BYTES.len()));
         fs::write(&path, DLL_BYTES).map_err(|e| {
             log(format!("Failed to write DLL {}: {e}", path.display()));
             e
@@ -64,18 +57,13 @@ fn install_inner() -> io::Result<()> {
     // Используем сам GUID превью как AppID (это нормальная схема)
     let appid = preview_clsid.clone();
 
-    log(format!(
-        "Using CLSIDs: THUMB={} PREVIEW={}, CATs: THUMB={} PREVIEW={}, AppID={}",
-        thumb_clsid, preview_clsid, thumb_catid, preview_catid, appid
-    ));
+    log(format!("Using CLSIDs: THUMB={} PREVIEW={}, CATs: THUMB={} PREVIEW={}, AppID={}", thumb_clsid, preview_clsid, thumb_catid, preview_catid, appid));
 
     // Утилиты удаления
     let del_tree = |path: &str| -> io::Result<()> {
         match root.delete_subkey_all(path) {
             Ok(()) => log(format!("Pre-clean: removed {}", path)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                log(format!("Pre-clean: missing {}", path))
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!("Pre-clean: missing {}", path)),
             Err(e) => return Err(e),
         }
         Ok(())
@@ -83,19 +71,11 @@ fn install_inner() -> io::Result<()> {
     let del_value = |key_path: &str, value_name: &str| -> io::Result<()> {
         match root.open_subkey_with_flags(key_path, KEY_READ | KEY_SET_VALUE) {
             Ok(key) => match key.delete_value(value_name) {
-                Ok(()) => log(format!(
-                    "Pre-clean: removed value {}\\{}",
-                    key_path, value_name
-                )),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!(
-                    "Pre-clean: value missing {}\\{}",
-                    key_path, value_name
-                )),
+                Ok(()) => log(format!("Pre-clean: removed value {}\\{}", key_path, value_name)),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!("Pre-clean: value missing {}\\{}", key_path, value_name)),
                 Err(e) => return Err(e),
             },
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                log(format!("Pre-clean: missing {}", key_path))
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!("Pre-clean: missing {}", key_path)),
             Err(e) => return Err(e),
         }
         Ok(())
@@ -113,69 +93,33 @@ fn install_inner() -> io::Result<()> {
     del_tree(r"Software\Classes\AppID\prevhost.exe")?;
 
     // ShellEx привязки: под расширением, ProgID и SFA\.blp
-    del_tree(&format!(
-        r"Software\Classes\{}\ShellEx\{}",
-        ext, thumb_catid
-    ))?;
-    del_tree(&format!(
-        r"Software\Classes\{}\ShellEx\{}",
-        ext, preview_catid
-    ))?;
-    del_tree(&format!(
-        r"Software\Classes\{}\ShellEx\{}",
-        progid, thumb_catid
-    ))?;
-    del_tree(&format!(
-        r"Software\Classes\{}\ShellEx\{}",
-        progid, preview_catid
-    ))?;
-    del_tree(&format!(
-        r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
-        ext, thumb_catid
-    ))?;
-    del_tree(&format!(
-        r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}",
-        ext, preview_catid
-    ))?;
+    del_tree(&format!(r"Software\Classes\{}\ShellEx\{}", ext, thumb_catid))?;
+    del_tree(&format!(r"Software\Classes\{}\ShellEx\{}", ext, preview_catid))?;
+    del_tree(&format!(r"Software\Classes\{}\ShellEx\{}", progid, thumb_catid))?;
+    del_tree(&format!(r"Software\Classes\{}\ShellEx\{}", progid, preview_catid))?;
+    del_tree(&format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}", ext, thumb_catid))?;
+    del_tree(&format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx\{}", ext, preview_catid))?;
 
     // .blp\PersistentHandler — удалить, чтобы не перехватывал обработку
     del_tree(&format!(r"Software\Classes\{}\PersistentHandler", ext))?;
 
     // CLSID\Preview\PersistentAddinsRegistered — выпиливаем (не нужно)
-    del_tree(&format!(
-        r"Software\Classes\CLSID\{}\PersistentAddinsRegistered",
-        preview_clsid
-    ))?;
+    del_tree(&format!(r"Software\Classes\CLSID\{}\PersistentAddinsRegistered", preview_clsid))?;
 
     // Списки Explorer (удаляем записи и запишем заново)
-    del_value(
-        r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
-        ext,
-    )?;
-    del_value(
-        r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers",
-        preview_clsid.as_str(),
-    )?;
+    del_value(r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers", ext)?;
+    del_value(r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers", preview_clsid.as_str())?;
 
     // Shell Extensions Approved (удаляем наши строки)
-    del_value(
-        r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
-        thumb_clsid.as_str(),
-    )?;
-    del_value(
-        r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
-        preview_clsid.as_str(),
-    )?;
+    del_value(r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved", thumb_clsid.as_str())?;
+    del_value(r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved", preview_clsid.as_str())?;
 
     log("Pre-clean: done");
 
     // 2) Одобряем расширения (HKCU)
     {
         log("Approving shell extensions");
-        let approved = Rk::open(
-            &root,
-            r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved",
-        )?;
+        let approved = Rk::open(&root, r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved")?;
         approved.set(&thumb_clsid, FRIENDLY_NAME)?;
         approved.set(&preview_clsid, PREVIEW_FRIENDLY_NAME)?;
     }
@@ -281,10 +225,7 @@ fn install_inner() -> io::Result<()> {
             .sub(&preview_catid)?
             .set_default(preview_clsid.as_str())?;
 
-        let sfa_sx = Rk::open(
-            &root,
-            format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx", ext),
-        )?;
+        let sfa_sx = Rk::open(&root, format!(r"Software\Classes\SystemFileAssociations\{}\ShellEx", ext))?;
         sfa_sx
             .sub(&thumb_catid)?
             .set_default(thumb_clsid.as_str())?;
@@ -296,22 +237,12 @@ fn install_inner() -> io::Result<()> {
     // 9) Списки хендлеров в Explorer
     {
         log("Updating Explorer handler lists");
-        Rk::open(
-            &root,
-            r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
-        )?
-        .set(ext, thumb_clsid.as_str())?;
-        Rk::open(
-            &root,
-            r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers",
-        )?
-        .set(preview_clsid.as_str(), PREVIEW_FRIENDLY_NAME)?;
+        Rk::open(&root, r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers")?.set(ext, thumb_clsid.as_str())?;
+        Rk::open(&root, r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers")?.set(preview_clsid.as_str(), PREVIEW_FRIENDLY_NAME)?;
     }
 
     // 10) Удобные флаги Explorer (не критично, но помогает)
-    if let Ok((adv, _)) =
-        root.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced")
-    {
+    if let Ok((adv, _)) = root.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced") {
         log("Setting Explorer Advanced toggles for previews/thumbnails");
         let _ = adv.set_value("ShowPreviewHandlers", &1u32);
         let _ = adv.set_value("IconsOnly", &0u32);

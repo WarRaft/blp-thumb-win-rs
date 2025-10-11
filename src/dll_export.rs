@@ -11,9 +11,7 @@ use crate::log::log;
 use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER, S_FALSE, S_OK};
 use windows::Win32::System::Com::{APTTYPE, APTTYPEQUALIFIER, CoGetApartmentType, IClassFactory};
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
-use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, IsWow64Process,
-};
+use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, IsWow64Process};
 use windows_core::{BOOL, GUID, HRESULT, IUnknown, Interface};
 
 fn log_host_environment() {
@@ -24,11 +22,7 @@ fn log_host_environment() {
     // Путь до host EXE
     let mut buf = [0u16; 260]; // можно больше (например 32768) если хочешь
     let n = unsafe { GetModuleFileNameW(None, &mut buf) } as usize; // <-- ключевая правка
-    let exe = if n > 0 {
-        String::from_utf16_lossy(&buf[..n])
-    } else {
-        "<unknown>".to_string()
-    };
+    let exe = if n > 0 { String::from_utf16_lossy(&buf[..n]) } else { "<unknown>".to_string() };
 
     // WOW64 vs native
     let mut wow = BOOL(0);
@@ -57,26 +51,16 @@ fn log_host_environment() {
         }
     };
 
-    let _ = log(format!(
-        "Host: exe='{}' pid={} tid={} arch={} apartment={} qual={}",
-        exe, pid, tid, arch, apt_s, qual_s
-    ));
+    let _ = log(format!("Host: exe='{}' pid={} tid={} arch={} apartment={} qual={}", exe, pid, tid, arch, apt_s, qual_s));
 }
 
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "system" fn DllGetClassObject(
-    rclsid: *const GUID,
-    riid: *const GUID,
-    ppv: *mut *mut c_void,
-) -> HRESULT {
+pub extern "system" fn DllGetClassObject(rclsid: *const GUID, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
     log("DllGetClassObject called");
     log_host_environment();
 
-    let _ = log(format!(
-        "DllGetClassObject args: rclsid_ptr={:?} riid_ptr={:?} ppv_ptr={:?}",
-        rclsid, riid, ppv
-    ));
+    let _ = log(format!("DllGetClassObject args: rclsid_ptr={:?} riid_ptr={:?} ppv_ptr={:?}", rclsid, riid, ppv));
 
     // Pretty-print CLSID/IID
     if let Some(g) = unsafe { rclsid.as_ref() } {
@@ -87,11 +71,7 @@ pub extern "system" fn DllGetClassObject(
         } else {
             "CLSID(unknown)"
         };
-        let _ = log(format!(
-            "DllGetClassObject rclsid={} {}",
-            name,
-            g.to_braced_upper()
-        ));
+        let _ = log(format!("DllGetClassObject rclsid={} {}", name, g.to_braced_upper()));
     } else {
         let _ = log("DllGetClassObject rclsid=NULL");
     }
@@ -103,11 +83,7 @@ pub extern "system" fn DllGetClassObject(
         } else {
             "IID(unknown)"
         };
-        let _ = log(format!(
-            "DllGetClassObject riid={} {}",
-            name,
-            g.to_braced_upper()
-        ));
+        let _ = log(format!("DllGetClassObject riid={} {}", name, g.to_braced_upper()));
     } else {
         let _ = log("DllGetClassObject riid=NULL");
     }
@@ -156,16 +132,10 @@ pub extern "system" fn DllGetClassObject(
         unsafe {
             *ppv = cf.into_raw();
         }
-        let _ = log(format!(
-            "DllGetClassObject: returning IClassFactory -> S_OK, out ppv={:?}",
-            unsafe { *ppv }
-        ));
+        let _ = log(format!("DllGetClassObject: returning IClassFactory -> S_OK, out ppv={:?}", unsafe { *ppv }));
         S_OK
     } else {
-        let _ = log(format!(
-            "DllGetClassObject: unsupported riid {} -> E_NOINTERFACE",
-            requested_iid.to_braced_upper()
-        ));
+        let _ = log(format!("DllGetClassObject: unsupported riid {} -> E_NOINTERFACE", requested_iid.to_braced_upper()));
         E_NOINTERFACE
     }
 }
@@ -176,10 +146,6 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     log("DllCanUnloadNow called");
     let locks = DLL_LOCK_COUNT.load(Ordering::SeqCst);
     let hr = if locks == 0 { S_OK } else { S_FALSE };
-    log(format!(
-        "DllCanUnloadNow: DLL_LOCK_COUNT={} -> {}",
-        locks,
-        if locks == 0 { "S_OK" } else { "S_FALSE" }
-    ));
+    log(format!("DllCanUnloadNow: DLL_LOCK_COUNT={} -> {}", locks, if locks == 0 { "S_OK" } else { "S_FALSE" }));
     hr
 }

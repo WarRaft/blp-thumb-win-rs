@@ -2,10 +2,7 @@ use crate::utils::notify_shell_assoc::notify_shell_assoc;
 
 use blp_thumb_win::log::log;
 use blp_thumb_win::utils::guid::GuidExt;
-use blp_thumb_win::{
-    CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, SHELL_PREVIEW_HANDLER_CATID,
-    SHELL_THUMB_HANDLER_CATID,
-};
+use blp_thumb_win::{CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, SHELL_PREVIEW_HANDLER_CATID, SHELL_THUMB_HANDLER_CATID};
 use std::io;
 use winreg::RegKey;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
@@ -66,9 +63,7 @@ fn uninstall_inner() -> io::Result<()> {
     let del_tree = |path: &str| -> io::Result<()> {
         match root.delete_subkey_all(path) {
             Ok(()) => log(format!("Removed key tree: {}", path)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                log(format!("Key missing (skip): {}", path))
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!("Key missing (skip): {}", path)),
             Err(e) => return Err(e),
         }
         Ok(())
@@ -78,15 +73,10 @@ fn uninstall_inner() -> io::Result<()> {
         match root.open_subkey_with_flags(key_path, KEY_READ | KEY_SET_VALUE) {
             Ok(key) => match key.delete_value(value_name) {
                 Ok(()) => log(format!("Removed value: {} \\ {}", key_path, value_name)),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!(
-                    "Value missing (skip): {} \\ {}",
-                    key_path, value_name
-                )),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!("Value missing (skip): {} \\ {}", key_path, value_name)),
                 Err(e) => return Err(e),
             },
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                log(format!("Key missing (skip): {}", key_path))
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!("Key missing (skip): {}", key_path)),
             Err(e) => return Err(e),
         }
         Ok(())
@@ -101,19 +91,14 @@ fn uninstall_inner() -> io::Result<()> {
                     if v.eq_ignore_ascii_case(expect) {
                         del_tree(subkey_path)?;
                     } else {
-                        log(format!(
-                            "Preserving {} (Default != ours): '{}'",
-                            subkey_path, v
-                        ));
+                        log(format!("Preserving {} (Default != ours): '{}'", subkey_path, v));
                     }
                 } else {
                     // no default → safe to remove empty node
                     del_tree(subkey_path)?;
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                log(format!("Missing (skip): {}", subkey_path))
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!("Missing (skip): {}", subkey_path)),
             Err(e) => return Err(e),
         }
         Ok(())
@@ -132,38 +117,14 @@ fn uninstall_inner() -> io::Result<()> {
     }
 
     // 2) ShellEx bindings (.blp / SFA\.blp / ProgID)
-    del_shellex_if_matches(
-        &format!(r"Software\Classes\{}", ext),
-        &thumb_catid,
-        &thumb_clsid,
-    )?;
-    del_shellex_if_matches(
-        &format!(r"Software\Classes\{}", ext),
-        &preview_catid,
-        &preview_clsid,
-    )?;
+    del_shellex_if_matches(&format!(r"Software\Classes\{}", ext), &thumb_catid, &thumb_clsid)?;
+    del_shellex_if_matches(&format!(r"Software\Classes\{}", ext), &preview_catid, &preview_clsid)?;
 
-    del_shellex_if_matches(
-        &format!(r"Software\Classes\SystemFileAssociations\{}", ext),
-        &thumb_catid,
-        &thumb_clsid,
-    )?;
-    del_shellex_if_matches(
-        &format!(r"Software\Classes\SystemFileAssociations\{}", ext),
-        &preview_catid,
-        &preview_clsid,
-    )?;
+    del_shellex_if_matches(&format!(r"Software\Classes\SystemFileAssociations\{}", ext), &thumb_catid, &thumb_clsid)?;
+    del_shellex_if_matches(&format!(r"Software\Classes\SystemFileAssociations\{}", ext), &preview_catid, &preview_clsid)?;
 
-    del_shellex_if_matches(
-        &format!(r"Software\Classes\{}", progid),
-        &thumb_catid,
-        &thumb_clsid,
-    )?;
-    del_shellex_if_matches(
-        &format!(r"Software\Classes\{}", progid),
-        &preview_catid,
-        &preview_clsid,
-    )?;
+    del_shellex_if_matches(&format!(r"Software\Classes\{}", progid), &thumb_catid, &thumb_clsid)?;
+    del_shellex_if_matches(&format!(r"Software\Classes\{}", progid), &preview_catid, &preview_clsid)?;
 
     // 3) Explorer handler lists
     {
@@ -175,25 +136,15 @@ fn uninstall_inner() -> io::Result<()> {
                     cur = cur.trim_matches(char::from(0)).trim().to_string();
                     if cur.eq_ignore_ascii_case(thumb_clsid.as_str()) {
                         key.delete_value(ext)?;
-                        log(format!(
-                            "Removed ThumbnailHandlers mapping: {} -> {}",
-                            ext, thumb_clsid
-                        ));
+                        log(format!("Removed ThumbnailHandlers mapping: {} -> {}", ext, thumb_clsid));
                     } else {
-                        log(format!(
-                            "Preserving ThumbnailHandlers mapping ({} -> {}), not ours",
-                            ext, cur
-                        ));
+                        log(format!("Preserving ThumbnailHandlers mapping ({} -> {}), not ours", ext, cur));
                     }
                 }
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    log("ThumbnailHandlers mapping missing (skip)")
-                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => log("ThumbnailHandlers mapping missing (skip)"),
                 Err(e) => return Err(e),
             },
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                log("ThumbnailHandlers key missing (skip)")
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => log("ThumbnailHandlers key missing (skip)"),
             Err(e) => return Err(e),
         }
 
@@ -211,16 +162,10 @@ fn uninstall_inner() -> io::Result<()> {
         del_sub_if_default_eq(&ph_ext_path, preview_clsid.as_str())?;
 
         // CLSID\{PREVIEW}\PersistentAddinsRegistered\{PreviewCat}
-        let par_cat = format!(
-            r"Software\Classes\CLSID\{}\PersistentAddinsRegistered\{}",
-            preview_clsid, preview_catid
-        );
+        let par_cat = format!(r"Software\Classes\CLSID\{}\PersistentAddinsRegistered\{}", preview_clsid, preview_catid);
         del_tree(&par_cat)?;
         // If PersistentAddinsRegistered is now empty, remove the parent as well (best-effort).
-        let par_root = format!(
-            r"Software\Classes\CLSID\{}\PersistentAddinsRegistered",
-            preview_clsid
-        );
+        let par_root = format!(r"Software\Classes\CLSID\{}\PersistentAddinsRegistered", preview_clsid);
         let _ = del_tree(&par_root);
     }
 

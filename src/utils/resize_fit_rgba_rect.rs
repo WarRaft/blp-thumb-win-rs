@@ -1,10 +1,4 @@
-pub fn resize_fit_rgba_rect(
-    src: &[u8],
-    sw: u32,
-    sh: u32,
-    max_w: u32,
-    max_h: u32,
-) -> (u32, u32, Vec<u8>) {
+pub fn resize_fit_rgba_rect(src: &[u8], sw: u32, sh: u32, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
     let max_w = max_w.max(1);
     let max_h = max_h.max(1);
     let scale = (max_w as f64 / sw as f64)

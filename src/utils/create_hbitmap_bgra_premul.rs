@@ -1,15 +1,8 @@
 use std::ptr::null_mut;
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG};
-use windows::Win32::Graphics::Gdi::{
-    BI_BITFIELDS, BITMAPINFO, BITMAPV5HEADER, CreateDIBSection, DIB_RGB_COLORS, DeleteObject,
-    HBITMAP,
-};
+use windows::Win32::Graphics::Gdi::{BI_BITFIELDS, BITMAPINFO, BITMAPV5HEADER, CreateDIBSection, DIB_RGB_COLORS, DeleteObject, HBITMAP};
 
-pub unsafe fn create_hbitmap_bgra_premul(
-    width: i32,
-    height: i32,
-    pixels_bgra: &[u8],
-) -> windows::core::Result<HBITMAP> {
+pub unsafe fn create_hbitmap_bgra_premul(width: i32, height: i32, pixels_bgra: &[u8]) -> windows::core::Result<HBITMAP> {
     pub const LCS_SRGB_U32: u32 = 0x7352_4742; // 'sRGB' в little-endian
 
     use core::ffi::c_void;

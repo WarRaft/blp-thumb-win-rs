@@ -93,27 +93,15 @@ impl<'a> Rk<'a> {
         let path = path.into();
         log(format!("Creating/opening registry key: {}", &path));
         let (key, _) = root.create_subkey(&path)?;
-        Ok(Self {
-            path,
-            key,
-            _root: root,
-        })
+        Ok(Self { path, key, _root: root })
     }
 
     #[inline]
     pub fn sub(&self, suffix: &str) -> io::Result<Rk<'a>> {
-        let full = if suffix.is_empty() {
-            self.path.clone()
-        } else {
-            format!(r"{}\{}", self.path, suffix)
-        };
+        let full = if suffix.is_empty() { self.path.clone() } else { format!(r"{}\{}", self.path, suffix) };
         log(format!("Creating/opening registry key: {}", &full));
         let (k, _) = self.key.create_subkey(suffix)?;
-        Ok(Rk {
-            path: full,
-            key: k,
-            _root: self._root,
-        })
+        Ok(Rk { path: full, key: k, _root: self._root })
     }
 
     // НИКАКИХ HRTB: V: IntoRegVal
@@ -122,37 +110,20 @@ impl<'a> Rk<'a> {
         let name_disp = if name.is_empty() { "(Default)" } else { name };
         match value.into_reg_val() {
             RegVal::Sz(os) => {
-                log(format!(
-                    "Setting value: {} \\ {} = REG_SZ",
-                    self.path, name_disp
-                ));
+                log(format!("Setting value: {} \\ {} = REG_SZ", self.path, name_disp));
                 self.key.set_value(name, &os)
             }
             RegVal::Dword(d) => {
-                log(format!(
-                    "Setting value: {} \\ {} = REG_DWORD",
-                    self.path, name_disp
-                ));
+                log(format!("Setting value: {} \\ {} = REG_DWORD", self.path, name_disp));
                 self.key.set_value(name, &d)
             }
             RegVal::Qword(q) => {
-                log(format!(
-                    "Setting value: {} \\ {} = REG_QWORD",
-                    self.path, name_disp
-                ));
+                log(format!("Setting value: {} \\ {} = REG_QWORD", self.path, name_disp));
                 self.key.set_value(name, &q)
             }
             RegVal::Bin(bytes) => {
-                log(format!(
-                    "Setting value: {} \\ {} = REG_BINARY ({} bytes)",
-                    self.path,
-                    name_disp,
-                    bytes.len()
-                ));
-                let rv = RegValue {
-                    vtype: RegType::REG_BINARY,
-                    bytes,
-                };
+                log(format!("Setting value: {} \\ {} = REG_BINARY ({} bytes)", self.path, name_disp, bytes.len()));
+                let rv = RegValue { vtype: RegType::REG_BINARY, bytes };
                 self.key.set_raw_value(name, &rv)
             }
         }

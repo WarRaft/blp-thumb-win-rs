@@ -10,11 +10,7 @@ use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::{io, io::Write, sync::Once};
 
-use windows::{
-    Win32::System::Console::GetConsoleWindow,
-    Win32::System::Diagnostics::Debug::OutputDebugStringW,
-    Win32::System::Threading::GetCurrentThreadId, core::PCWSTR,
-};
+use windows::{Win32::System::Console::GetConsoleWindow, Win32::System::Diagnostics::Debug::OutputDebugStringW, Win32::System::Threading::GetCurrentThreadId, core::PCWSTR};
 // <— добавили
 
 use winreg::RegKey;
@@ -45,11 +41,7 @@ pub fn toggle_logging() {
     LOG_ON.store(new, Ordering::Relaxed);
     // Persist to registry (best-effort)
     let _ = write_registry_flag(new);
-    ods_immediate(if new {
-        "[blp-thumb] logging: ON"
-    } else {
-        "[blp-thumb] logging: OFF"
-    });
+    ods_immediate(if new { "[blp-thumb] logging: ON" } else { "[blp-thumb] logging: OFF" });
 
     if new {
         println!(

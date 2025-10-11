@@ -51,8 +51,7 @@ pub const SHELL_THUMB_HANDLER_CATID: GUID = GUID::from_u128(0xE357FCCD_A995_4576
 /// Shell Preview Handler category.
 /// - HKCR\\CLSID\\{CLSID}\\Implemented Categories\\{SHELL_PREVIEW_HANDLER_CATID}
 /// - HKCR\\<.ext | ProgID>\\ShellEx\\{SHELL_PREVIEW_HANDLER_CATID} = {CLSID}
-pub const SHELL_PREVIEW_HANDLER_CATID: GUID =
-    GUID::from_u128(0x8895B1C6_B41F_4C1C_A562_0D564250836F);
+pub const SHELL_PREVIEW_HANDLER_CATID: GUID = GUID::from_u128(0x8895B1C6_B41F_4C1C_A562_0D564250836F);
 
 /// CLSID of this provider. Must match DLL exports and registry bindings.
 pub const CLSID_BLP_THUMB: GUID = GUID::from_u128(0xB2E9A1F3_7C5D_4E2B_96A1_2C3D4E5F6A7B);

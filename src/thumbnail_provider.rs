@@ -12,21 +12,12 @@ use crate::utils::resize_fit_rgba::resize_fit_rgba;
 use crate::utils::rgba_to_bgra_premul::rgba_to_bgra_premul;
 use windows::Win32::Graphics::Gdi::HBITMAP;
 use windows::Win32::System::Com::{ISequentialStream, IStream, STREAM_SEEK_SET};
-use windows::Win32::UI::Shell::PropertiesSystem::{
-    IInitializeWithFile_Impl, IInitializeWithStream_Impl,
-};
-use windows::Win32::UI::Shell::{
-    IInitializeWithItem_Impl, IShellItem, SIGDN_FILESYSPATH, WTS_ALPHATYPE, WTSAT_ARGB,
-};
+use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile_Impl, IInitializeWithStream_Impl};
+use windows::Win32::UI::Shell::{IInitializeWithItem_Impl, IShellItem, SIGDN_FILESYSPATH, WTS_ALPHATYPE, WTSAT_ARGB};
 use windows::core::{Interface, Result as WinResult};
 use windows_core::{PCWSTR, PWSTR};
 
-#[implement(
-    windows::Win32::UI::Shell::IThumbnailProvider,
-    windows::Win32::UI::Shell::IInitializeWithItem,
-    windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithStream,
-    windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithFile
-)]
+#[implement(windows::Win32::UI::Shell::IThumbnailProvider, windows::Win32::UI::Shell::IInitializeWithItem, windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithStream, windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithFile)]
 pub struct BlpThumbProvider {
     state: Mutex<ProviderState>,
 }
@@ -35,9 +26,7 @@ impl BlpThumbProvider {
     pub fn new() -> Self {
         DLL_LOCK_COUNT.fetch_add(1, Ordering::SeqCst);
         log("BlpThumbProvider::new");
-        Self {
-            state: Mutex::new(ProviderState::default()),
-        }
+        Self { state: Mutex::new(ProviderState::default()) }
     }
 }
 
@@ -54,19 +43,13 @@ impl Drop for BlpThumbProvider {
 
 impl IInitializeWithItem_Impl for BlpThumbProvider_Impl {
     #[allow(non_snake_case)]
-    fn Initialize(
-        &self,
-        psi: windows::core::Ref<'_, IShellItem>,
-        _grf_mode: u32,
-    ) -> windows::core::Result<()> {
+    fn Initialize(&self, psi: windows::core::Ref<'_, IShellItem>, _grf_mode: u32) -> windows::core::Result<()> {
         unsafe {
             // Ref<IShellItem> -> &IShellItem
             let item: &IShellItem = psi.ok()?;
             let pw: PWSTR = item.GetDisplayName(SIGDN_FILESYSPATH)?;
             if pw.is_null() {
-                return Err(windows::core::Error::from(
-                    windows::Win32::Foundation::E_FAIL,
-                ));
+                return Err(windows::core::Error::from(windows::Win32::Foundation::E_FAIL));
             }
             let s16 = widestring::U16CStr::from_ptr_str(pw.0);
             let path = s16.to_string_lossy();
@@ -103,11 +86,7 @@ impl IInitializeWithFile_Impl for BlpThumbProvider_Impl {
 
 impl IInitializeWithStream_Impl for BlpThumbProvider_Impl {
     #[allow(non_snake_case)]
-    fn Initialize(
-        &self,
-        pstream: windows::core::Ref<'_, IStream>,
-        _grf_mode: u32,
-    ) -> windows::core::Result<()> {
+    fn Initialize(&self, pstream: windows::core::Ref<'_, IStream>, _grf_mode: u32) -> windows::core::Result<()> {
         use windows::Win32::Foundation::{E_FAIL, S_FALSE};
         use windows::core::Error;
 
@@ -126,19 +105,10 @@ impl IInitializeWithStream_Impl for BlpThumbProvider_Impl {
 
         loop {
             let mut read = 0u32;
-            let hr = unsafe {
-                seq.Read(
-                    buf.as_mut_ptr() as *mut _,
-                    buf.len() as u32,
-                    Some(&mut read as *mut u32),
-                )
-            };
+            let hr = unsafe { seq.Read(buf.as_mut_ptr() as *mut _, buf.len() as u32, Some(&mut read as *mut u32)) };
 
             if hr.is_err() {
-                log(format!(
-                    "IInitializeWithStream: Read failed hr=0x{:08X}",
-                    hr.0 as u32
-                ));
+                log(format!("IInitializeWithStream: Read failed hr=0x{:08X}", hr.0 as u32));
                 return Err(Error::from(hr));
             }
 
@@ -168,12 +138,7 @@ impl IInitializeWithStream_Impl for BlpThumbProvider_Impl {
 
 impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Impl {
     #[allow(non_snake_case)]
-    fn GetThumbnail(
-        &self,
-        cx: u32,
-        phbmp: *mut HBITMAP,
-        pdwalpha: *mut WTS_ALPHATYPE,
-    ) -> WinResult<()> {
+    fn GetThumbnail(&self, cx: u32, phbmp: *mut HBITMAP, pdwalpha: *mut WTS_ALPHATYPE) -> WinResult<()> {
         use windows::Win32::Foundation::{E_FAIL, E_POINTER};
         use windows::core::Error;
 
@@ -191,10 +156,7 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
 
         let using_stream = data_arc.is_some();
         let data_arc: Arc<[u8]> = if let Some(buf) = data_arc {
-            log(format!(
-                "GetThumbnail: using cached stream buffer ({} bytes)",
-                buf.len()
-            ));
+            log(format!("GetThumbnail: using cached stream buffer ({} bytes)", buf.len()));
             buf
         } else {
             let path = path_opt.ok_or_else(|| {
@@ -213,23 +175,12 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
 
         // читаем и декодим BLP → RGBA (mip0)
         let (w, h, rgba) = decode_blp_rgba(&data_arc).map_err(|_| {
-            log(format!(
-                "GetThumbnail: decode failed (source={}, bytes={})",
-                if using_stream { "stream" } else { "file" },
-                data_len
-            ));
+            log(format!("GetThumbnail: decode failed (source={}, bytes={})", if using_stream { "stream" } else { "file" }, data_len));
             Error::from(E_FAIL)
         })?;
-        let (tw, th, rgba_fit) = if cx > 0 && w.max(h) > cx {
-            resize_fit_rgba(&rgba, w, h, cx)
-        } else {
-            (w, h, rgba)
-        };
+        let (tw, th, rgba_fit) = if cx > 0 && w.max(h) > cx { resize_fit_rgba(&rgba, w, h, cx) } else { (w, h, rgba) };
 
-        log(format!(
-            "GetThumbnail: decoded {}x{} -> {}x{} (stream={}, bytes={})",
-            w, h, tw, th, using_stream, data_len
-        ));
+        log(format!("GetThumbnail: decoded {}x{} -> {}x{} (stream={}, bytes={})", w, h, tw, th, using_stream, data_len));
 
         // RGBA → BGRA premultiplied
         let bgra_pm = rgba_to_bgra_premul(&rgba_fit);
@@ -241,10 +192,7 @@ impl windows::Win32::UI::Shell::IThumbnailProvider_Impl for BlpThumbProvider_Imp
             *phbmp = hbmp;
             *pdwalpha = WTSAT_ARGB;
         }
-        log(format!(
-            "GetThumbnail: success ({}x{}, stream={})",
-            tw, th, using_stream
-        ));
+        log(format!("GetThumbnail: success ({}x{}, stream={})", tw, th, using_stream));
         Ok(())
     }
 }

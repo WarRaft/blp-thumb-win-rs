@@ -34,10 +34,7 @@ fn clear_cache_inner() -> io::Result<()> {
         let path = r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Cached";
         match root.open_subkey_with_flags(path, KEY_READ | KEY_SET_VALUE) {
             Ok(key) => {
-                let clsids = [
-                    CLSID_BLP_THUMB.to_braced_upper(),
-                    CLSID_BLP_PREVIEW.to_braced_upper(),
-                ];
+                let clsids = [CLSID_BLP_THUMB.to_braced_upper(), CLSID_BLP_PREVIEW.to_braced_upper()];
                 let mut total_removed = 0usize;
 
                 for clsid in clsids {
@@ -64,10 +61,7 @@ fn clear_cache_inner() -> io::Result<()> {
                     }
                     total_removed += removed;
 
-                    log(format!(
-                        "HKCU: removed {} cached entries for {}",
-                        removed, clsid
-                    ));
+                    log(format!("HKCU: removed {} cached entries for {}", removed, clsid));
                 }
 
                 if total_removed == 0 {
@@ -100,10 +94,7 @@ fn clear_cache_inner() -> io::Result<()> {
 
         let dir = PathBuf::from(local).join(r"Microsoft\Windows\Explorer");
         if !dir.is_dir() {
-            log(format!(
-                "Clear cache: directory {} not found",
-                dir.display()
-            ));
+            log(format!("Clear cache: directory {} not found", dir.display()));
         } else {
             let mut removed = 0usize;
             for entry in fs::read_dir(&dir)? {
@@ -117,22 +108,14 @@ fn clear_cache_inner() -> io::Result<()> {
                                     removed += 1;
                                 }
                                 Err(e) => {
-                                    log(format!(
-                                        "Clear cache: failed to remove {}: {}",
-                                        path.display(),
-                                        e
-                                    ));
+                                    log(format!("Clear cache: failed to remove {}: {}", path.display(), e));
                                 }
                             }
                         }
                     }
                 }
             }
-            log(format!(
-                "Clear cache: removed {} files from {}",
-                removed,
-                dir.display()
-            ));
+            log(format!("Clear cache: removed {} files from {}", removed, dir.display()));
         }
     }
 

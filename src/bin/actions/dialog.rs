@@ -33,30 +33,13 @@ fn theme() -> ColorfulTheme {
 }
 
 pub fn action_choose() -> io::Result<(Action, String)> {
-    let mut actions = vec![
-        Action::Install,
-        Action::Uninstall,
-        Action::RestartExplorer,
-        Action::ClearThumbCache,
-    ];
+    let mut actions = vec![Action::Install, Action::Uninstall, Action::RestartExplorer, Action::ClearThumbCache];
 
-    let mut labels: Vec<String> = vec![
-        "Install (current user)".into(),
-        "Uninstall (current user)".into(),
-        "Restart Explorer".into(),
-        "Clear thumbnail cache".into(),
-    ];
+    let mut labels: Vec<String> = vec!["Install (current user)".into(), "Uninstall (current user)".into(), "Restart Explorer".into(), "Clear thumbnail cache".into()];
 
     let logging_enabled = log_enabled();
     actions.push(Action::ToggleLogging);
-    labels.push(
-        if logging_enabled {
-            "Disable log"
-        } else {
-            "Enable log"
-        }
-        .into(),
-    );
+    labels.push(if logging_enabled { "Disable log" } else { "Enable log" }.into());
 
     actions.push(Action::Exit);
     labels.push("Exit".into());
