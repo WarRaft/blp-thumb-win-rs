@@ -5,7 +5,7 @@ use std::{
     ffi::c_void,
     ptr,
 };
-use windows::Win32::Graphics::Gdi::UpdateWindow;
+use windows::Win32::UI::WindowsAndMessaging::WNDCLASS_STYLES;
 use windows::{
     Win32::{
         Foundation::{
@@ -43,8 +43,6 @@ use windows::{
                 PropertiesSystem::{IInitializeWithStream, IInitializeWithStream_Impl},
             },
             WindowsAndMessaging::{
-                CS_HREDRAW,
-                CS_VREDRAW,
                 CreateWindowExW, //
                 DefWindowProcW,
                 DestroyWindow,
@@ -53,10 +51,13 @@ use windows::{
                 LoadCursorW,
                 MSG,
                 RegisterClassExW,
+                SW_SHOW,
                 SWP_NOACTIVATE,
+                SWP_NOMOVE,
                 SWP_NOZORDER,
                 SetParent,
                 SetWindowPos,
+                ShowWindow,
                 WINDOW_EX_STYLE,
                 WM_CREATE,
                 WM_DESTROY,
@@ -84,12 +85,12 @@ use windows_result::HRESULT;
 
 static CLASS_REG: OnceLock<Result<()>> = OnceLock::new();
 
-pub fn register_class_once() -> Result<()> {
+fn register_class_once() -> Result<()> {
     CLASS_REG
         .get_or_init(|| unsafe {
             let wc = WNDCLASSEXW {
                 cbSize: size_of::<WNDCLASSEXW>() as u32, //
-                style: CS_HREDRAW | CS_VREDRAW,
+                style: WNDCLASS_STYLES(0),
                 lpfnWndProc: Some(wndproc),
                 hInstance: GetModuleHandleW(None).ok().unwrap().into(),
                 hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
@@ -145,22 +146,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
     unsafe {
         match msg {
             WM_ERASEBKGND => LRESULT(0),
-
-            WM_WINDOWPOSCHANGED => {
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                LRESULT(0)
-            }
-
             WM_SHOWWINDOW => {
                 if w.0 != 0 {
                     let _ = InvalidateRect(Some(hwnd), None, false);
-                    let _ = UpdateWindow(hwnd);
                 }
                 LRESULT(0)
             }
 
             WM_NCPAINT => LRESULT(0),
             WM_PAINT => {
+                if true {
+                    return LRESULT(0);
+                }
+
                 let mut ps = PAINTSTRUCT::default();
                 let hdc = BeginPaint(hwnd, &mut ps);
 
@@ -214,6 +212,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
 
             WM_NCCALCSIZE => LRESULT(0),
             WM_SIZE => {
+                let wpx = (l.0 & 0xFFFF) as i32; // LOWORD(lParam) = width
+                let hpx = ((l.0 >> 16) & 0xFFFF) as i32; // HIWORD(lParam) = height
+                log(&format!("WM_SIZE: {}x{}", wpx, hpx));
+
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 LRESULT(0)
             }
@@ -228,7 +230,7 @@ pub struct BlpPreviewHandler {
     // Сохраняем только данные, приходящие из аргументов методов:
     hwnd_parent: Cell<HWND>, // из SetWindow(parent, ...)
     hwnd_preview: Cell<HWND>,
-    rc_parent: Cell<RECT>,            // из SetWindow/SetRect
+    rc: Cell<RECT>,                   // из SetWindow/SetRect
     site: RefCell<Option<IUnknown>>,  // из SetSite
     stream: RefCell<Option<IStream>>, // из Initialize
 }
@@ -240,7 +242,7 @@ impl BlpPreviewHandler {
         Self {
             hwnd_parent: Cell::new(HWND::default()), //
             hwnd_preview: Cell::new(HWND::default()),
-            rc_parent: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
+            rc: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
             site: RefCell::new(None),
             stream: RefCell::new(None),
         }
@@ -277,25 +279,22 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         } else {
             let rc = unsafe { *prc };
             log(&format!("BlpPreviewHandler::SetWindow (parent=0x{:X}, rc=({}, {}, {}, {}))", parent.0 as usize, rc.left, rc.top, rc.right, rc.bottom));
-            self.rc_parent.set(rc);
-        }
+            self.rc.set(rc);
 
-        let preview = self.hwnd_preview.get();
-        if !preview.is_invalid() && !parent.is_invalid() {
             unsafe {
-                let _ = SetParent(preview, Some(parent));
-            }
-            let rc = self.rc_parent.get();
-            unsafe {
-                let _ = SetWindowPos(
-                    preview,
-                    None, //
-                    rc.left,
-                    rc.top,
-                    rc.right - rc.left,
-                    rc.bottom - rc.top,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                );
+                let preview = self.hwnd_preview.get();
+                if !preview.is_invalid() {
+                    let _ = SetParent(preview, Some(parent));
+                    let _ = SetWindowPos(
+                        preview,
+                        None, //
+                        rc.left,
+                        rc.top,
+                        rc.right - rc.left,
+                        rc.bottom - rc.top,
+                        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
             }
         }
         Ok(())
@@ -308,13 +307,27 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         }
         let rc = unsafe { *prc };
         log(&format!("BlpPreviewHandler::SetRect (rc=({}, {}, {}, {}))", rc.left, rc.top, rc.right, rc.bottom));
-        self.rc_parent.set(rc);
+        self.rc.set(rc);
+
+        unsafe {
+            let preview = self.hwnd_preview.get();
+            let _ = SetWindowPos(
+                preview,
+                None, //
+                rc.left,
+                rc.top,
+                rc.right - rc.left,
+                rc.bottom - rc.top,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+
         Ok(())
     }
 
     fn DoPreview(&self) -> Result<()> {
         let parent = self.hwnd_parent.get();
-        let rc = self.rc_parent.get();
+        let rc = self.rc.get();
         log(&format!(
             "BlpPreviewHandler::DoPreview (parent=0x{:X}, rc=({}, {}, {}, {}), has_stream={})",
             parent.0 as usize, //
@@ -343,17 +356,17 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
                     None,                     // hInstance: module handle owning the window class/resources
                     None,                     // lpParam: pointer to CREATESTRUCT/any user data passed to WM_CREATE (None = no extra)
                 )?;
-
                 self.hwnd_preview.set(hwnd);
+                let _ = ShowWindow(hwnd, SW_SHOW);
             } else {
                 let _ = SetWindowPos(
-                    preview,                       // hWnd: handle of the window to move/resize (our child/canvas)
-                    None,                          // hWndInsertAfter: Z-order target (None/NULL → ignored with SWP_NOZORDER)
-                    rc.left,                       // X: new left position (ignored if SWP_NOMOVE is set)
-                    rc.top,                        // Y: new top position  (ignored if SWP_NOMOVE is set)
-                    rc.right - rc.left,            // cx: new width in pixels
-                    rc.bottom - rc.top,            // cy: new height in pixels
-                    SWP_NOZORDER | SWP_NOACTIVATE, // uFlags: don't move, don't change Z-order, don't activate
+                    preview,                                    // hWnd: handle of the window to move/resize (our child/canvas)
+                    None,                                       // hWndInsertAfter: Z-order target (None/NULL → ignored with SWP_NOZORDER)
+                    rc.left,                                    // X: new left position (ignored if SWP_NOMOVE is set)
+                    rc.top,                                     // Y: new top position  (ignored if SWP_NOMOVE is set)
+                    rc.right - rc.left,                         // cx: new width in pixels
+                    rc.bottom - rc.top,                         // cy: new height in pixels
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE, // uFlags: don't move, don't change Z-order, don't activate
                 );
             }
         }
