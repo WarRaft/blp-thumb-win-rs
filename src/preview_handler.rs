@@ -5,7 +5,8 @@ use std::{
     ffi::c_void,
     ptr,
 };
-use windows::Win32::UI::WindowsAndMessaging::WNDCLASS_STYLES;
+use windows::Win32::Graphics::Gdi::{RDW_INTERNALPAINT, RDW_INVALIDATE, RedrawWindow};
+use windows::Win32::UI::WindowsAndMessaging::GetParent;
 use windows::{
     Win32::{
         Foundation::{
@@ -25,9 +26,7 @@ use windows::{
             EndPaint,
             FillRect,
             GetSysColorBrush,
-            HBRUSH,
             HGDIOBJ,
-            InvalidateRect,
             PAINTSTRUCT,
         },
         System::{
@@ -43,11 +42,14 @@ use windows::{
                 PropertiesSystem::{IInitializeWithStream, IInitializeWithStream_Impl},
             },
             WindowsAndMessaging::{
+                CS_HREDRAW,
+                CS_VREDRAW,
                 CreateWindowExW, //
                 DefWindowProcW,
                 DestroyWindow,
                 GetClientRect,
                 IDC_ARROW,
+                IsWindow,
                 LoadCursorW,
                 MSG,
                 RegisterClassExW,
@@ -72,6 +74,7 @@ use windows::{
                 WM_SIZE,
                 WM_WINDOWPOSCHANGED,
                 WM_WINDOWPOSCHANGING,
+                WNDCLASS_STYLES,
                 WNDCLASSEXW,
                 WS_CHILD,
                 WS_VISIBLE,
@@ -90,11 +93,11 @@ fn register_class_once() -> Result<()> {
         .get_or_init(|| unsafe {
             let wc = WNDCLASSEXW {
                 cbSize: size_of::<WNDCLASSEXW>() as u32, //
-                style: WNDCLASS_STYLES(0),
+                style: WNDCLASS_STYLES(CS_HREDRAW.0 | CS_VREDRAW.0),
                 lpfnWndProc: Some(wndproc),
                 hInstance: GetModuleHandleW(None).ok().unwrap().into(),
                 hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
-                hbrBackground: HBRUSH::default(),
+                hbrBackground: GetSysColorBrush(COLOR_WINDOW),
                 lpszClassName: w!("BLP_PREVIEW_SQUARE"),
                 ..Default::default()
             };
@@ -115,8 +118,11 @@ fn register_class_once() -> Result<()> {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    let parent = unsafe { GetParent(hwnd) }.unwrap_or_default();
+
     log(&format!(
-        "wndproc: hwnd=0x{:X} msg=0x{:X}({}) wParam=0x{:X} lParam=0x{:X}",
+        "[wndproc] 0x{:X}:0x{:X} msg=0x{:X}({}) wParam=0x{:X} lParam=0x{:X}",
+        parent.0 as usize,
         hwnd.0 as usize,
         msg,
         match msg {
@@ -143,91 +149,77 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         l.0
     ));
 
-    unsafe {
-        match msg {
-            WM_ERASEBKGND => LRESULT(0),
-            WM_SHOWWINDOW => {
-                if w.0 != 0 {
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
-                LRESULT(0)
+    match msg {
+        WM_ERASEBKGND => LRESULT(0),
+        WM_SHOWWINDOW => LRESULT(0),
+        WM_NCPAINT => LRESULT(1),
+        WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+
+            // client rect
+            let mut rc = RECT::default();
+            let _ = unsafe { GetClientRect(hwnd, &mut rc) };
+            let cw = rc.right - rc.left;
+            let ch = rc.bottom - rc.top;
+
+            // log sizes every time
+            log(&format!("WM_PAINT: client {}x{} (l={}, t={}, r={}, b={})", cw, ch, rc.left, rc.top, rc.right, rc.bottom));
+
+            // skip drawing when size is zero (but still EndPaint!)
+            if cw <= 0 || ch <= 0 {
+                let _ = unsafe { EndPaint(hwnd, &ps) };
+                return LRESULT(0);
             }
 
-            WM_NCPAINT => LRESULT(0),
-            WM_PAINT => {
-                if true {
-                    return LRESULT(0);
-                }
+            // background
+            let _ = unsafe { FillRect(hdc, &rc, GetSysColorBrush(COLOR_WINDOW)) };
 
-                let mut ps = PAINTSTRUCT::default();
-                let hdc = BeginPaint(hwnd, &mut ps);
+            // square geometry
+            let side = (cw.min(ch) * 3) / 5;
+            let dx = rc.left + (cw - side) / 2;
+            let dy = rc.top + (ch - side) / 2;
+            let sq = RECT { left: dx, top: dy, right: dx + side, bottom: dy + side };
 
-                // client rect
-                let mut rc = RECT::default();
-                let _ = GetClientRect(hwnd, &mut rc);
-                let cw = rc.right - rc.left;
-                let ch = rc.bottom - rc.top;
-
-                // log sizes every time
-                log(&format!("WM_PAINT: client {}x{} (l={}, t={}, r={}, b={})", cw, ch, rc.left, rc.top, rc.right, rc.bottom));
-
-                // skip drawing when size is zero (but still EndPaint!)
-                if cw <= 0 || ch <= 0 {
-                    let _ = EndPaint(hwnd, &ps);
-                    return LRESULT(0);
-                }
-
-                // background
-                let _ = FillRect(hdc, &rc, GetSysColorBrush(COLOR_WINDOW));
-
-                // square geometry
-                let side = (cw.min(ch) * 3) / 5;
-                let dx = rc.left + (cw - side) / 2;
-                let dy = rc.top + (ch - side) / 2;
-                let sq = RECT { left: dx, top: dy, right: dx + side, bottom: dy + side };
-
-                // pseudo-random not-white color (time-based)
-                let t = GetTickCount();
-                let mut r = (t & 0xFF) as u8;
-                let mut g = ((t >> 8) & 0xFF) as u8;
-                let mut b = ((t >> 16) & 0xFF) as u8;
-                if r > 230 && g > 230 && b > 230 {
-                    r = r.saturating_sub(80);
-                    g = g.saturating_sub(60);
-                    b = b.saturating_sub(40);
-                }
-                if r > 200 {
-                    r = 200;
-                }
-
-                let brush = CreateSolidBrush(COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16)));
-                if !brush.is_invalid() {
-                    let _ = FillRect(hdc, &sq, brush);
-                    let _ = DeleteObject(HGDIOBJ(brush.0));
-                }
-
-                let _ = EndPaint(hwnd, &ps);
-                LRESULT(0)
+            // pseudo-random not-white color (time-based)
+            let t = unsafe { GetTickCount() };
+            let mut r = (t & 0xFF) as u8;
+            let mut g = ((t >> 8) & 0xFF) as u8;
+            let mut b = ((t >> 16) & 0xFF) as u8;
+            if r > 230 && g > 230 && b > 230 {
+                r = r.saturating_sub(80);
+                g = g.saturating_sub(60);
+                b = b.saturating_sub(40);
+            }
+            if r > 200 {
+                r = 200;
             }
 
-            WM_NCCALCSIZE => LRESULT(0),
-            WM_SIZE => {
-                let wpx = (l.0 & 0xFFFF) as i32; // LOWORD(lParam) = width
-                let hpx = ((l.0 >> 16) & 0xFFFF) as i32; // HIWORD(lParam) = height
-                log(&format!("WM_SIZE: {}x{}", wpx, hpx));
-
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                LRESULT(0)
+            let brush = unsafe { CreateSolidBrush(COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16))) };
+            if !brush.is_invalid() {
+                let _ = unsafe { FillRect(hdc, &sq, brush) };
+                let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
             }
 
-            _ => DefWindowProcW(hwnd, msg, w, l),
+            let _ = unsafe { EndPaint(hwnd, &ps) };
+            LRESULT(0)
         }
+
+        WM_NCCALCSIZE => LRESULT(0),
+        WM_SIZE => {
+            let wpx = (l.0 & 0xFFFF) as i32; // LOWORD(lParam) = width
+            let hpx = ((l.0 >> 16) & 0xFFFF) as i32; // HIWORD(lParam) = height
+            log(&format!("WM_SIZE: {}x{}", wpx, hpx));
+
+            LRESULT(0)
+        }
+
+        _ => unsafe { DefWindowProcW(hwnd, msg, w, l) },
     }
 }
 
 #[implement(IObjectWithSite, IPreviewHandler, IOleWindow, IInitializeWithStream)]
 pub struct BlpPreviewHandler {
-    // Сохраняем только данные, приходящие из аргументов методов:
     hwnd_parent: Cell<HWND>, // из SetWindow(parent, ...)
     hwnd_preview: Cell<HWND>,
     rc: Cell<RECT>,                   // из SetWindow/SetRect
@@ -257,10 +249,10 @@ impl IInitializeWithStream_Impl for BlpPreviewHandler_Impl {
 
         if let Some(stream) = opt {
             let raw = stream.as_raw();
-            log(&format!("BlpPreviewHandler::Initialize (pStream=0x{:X}, grfMode=0x{:X})", raw as usize, grfMode));
+            log(&format!("Initialize (pStream=0x{:X}, grfMode=0x{:X})", raw as usize, grfMode));
             *self.stream.borrow_mut() = Some(stream);
         } else {
-            log("BlpPreviewHandler::Initialize (pStream=None)");
+            log("Initialize (pStream=None)");
             *self.stream.borrow_mut() = None;
         }
 
@@ -272,77 +264,104 @@ impl IInitializeWithStream_Impl for BlpPreviewHandler_Impl {
 #[allow(non_snake_case)]
 impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
     fn SetWindow(&self, parent: HWND, prc: *const RECT) -> Result<()> {
+        if parent.is_invalid() || prc.is_null() {
+            log(&format!("SetWindow (parent=0x{:X}, prc=NULL)", parent.0 as usize));
+            return Ok(());
+        }
         self.hwnd_parent.set(parent);
 
-        if prc.is_null() {
-            log(&format!("BlpPreviewHandler::SetWindow (parent=0x{:X}, prc=NULL)", parent.0 as usize));
-        } else {
-            let rc = unsafe { *prc };
-            log(&format!("BlpPreviewHandler::SetWindow (parent=0x{:X}, rc=({}, {}, {}, {}))", parent.0 as usize, rc.left, rc.top, rc.right, rc.bottom));
-            self.rc.set(rc);
+        let rc = unsafe { *prc };
+        log(&format!("SetWindow (parent=0x{:X}, rc=({}, {}, {}, {}))", parent.0 as usize, rc.left, rc.top, rc.right, rc.bottom));
+        self.rc.set(rc);
 
-            unsafe {
-                let preview = self.hwnd_preview.get();
-                if !preview.is_invalid() {
-                    let _ = SetParent(preview, Some(parent));
-                    let _ = SetWindowPos(
-                        preview,
-                        None, //
-                        rc.left,
-                        rc.top,
-                        rc.right - rc.left,
-                        rc.bottom - rc.top,
-                        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-                    );
-                }
-            }
+        let preview = self.hwnd_preview.get();
+        if !preview.is_invalid() {
+            match unsafe { SetParent(preview, Some(parent)) } {
+                Ok(_) => log("  SetWindow => SetParent => OK"),
+                Err(e) => log(&format!("  SetParent => ERR: {:?}", e)),
+            };
+
+            match unsafe {
+                SetWindowPos(
+                    preview, //
+                    None,
+                    rc.left,
+                    rc.top,
+                    rc.right - rc.left,
+                    rc.bottom - rc.top,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            } {
+                Ok(_) => log("  SetWindow => SetWindowPos => OK"),
+                Err(e) => log(&format!("  SetWindowPos => ERR: {:?}", e)),
+            };
+        } else {
+            log("  SetWindow => hwnd_preview is invalid, skipping SetParent/SetWindowPos");
         }
+
         Ok(())
     }
 
     fn SetRect(&self, prc: *const RECT) -> Result<()> {
         if prc.is_null() {
-            log("BlpPreviewHandler::SetRect (prc=NULL)");
+            log("SetRect (prc=NULL)");
             return Ok(());
         }
         let rc = unsafe { *prc };
-        log(&format!("BlpPreviewHandler::SetRect (rc=({}, {}, {}, {}))", rc.left, rc.top, rc.right, rc.bottom));
         self.rc.set(rc);
 
-        unsafe {
-            let preview = self.hwnd_preview.get();
-            let _ = SetWindowPos(
-                preview,
-                None, //
-                rc.left,
-                rc.top,
-                rc.right - rc.left,
-                rc.bottom - rc.top,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-        }
+        let parent = self.hwnd_parent.get();
+        let preview = self.hwnd_preview.get();
 
+        log(&format!(
+            "SetRect 0x{:X}:0x{:X} (rc=({}, {}, {}, {}))",
+            parent.0 as usize, //
+            preview.0 as usize,
+            rc.left,
+            rc.top,
+            rc.right,
+            rc.bottom
+        ));
+
+        if !preview.is_invalid() {
+            match unsafe {
+                SetWindowPos(
+                    preview,
+                    None, //
+                    rc.left,
+                    rc.top,
+                    rc.right - rc.left,
+                    rc.bottom - rc.top,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            } {
+                Ok(_) => log("  SetRect => SetWindowPos => OK"),
+                Err(e) => log(&format!("  SetRect => SetWindowPos => ERR: {:?}", e)),
+            };
+        }
         Ok(())
     }
 
     fn DoPreview(&self) -> Result<()> {
         let parent = self.hwnd_parent.get();
         let rc = self.rc.get();
+        let preview = self.hwnd_preview.get();
+
         log(&format!(
-            "BlpPreviewHandler::DoPreview (parent=0x{:X}, rc=({}, {}, {}, {}), has_stream={})",
+            "DoPreview 0x{:X}:0x{:X} (rc=({}, {}, {}, {}), has_stream={})",
             parent.0 as usize, //
+            preview.0 as usize,
             rc.left,
             rc.top,
             rc.right,
             rc.bottom,
             self.stream.borrow().is_some()
         ));
-        let preview = self.hwnd_preview.get();
 
-        unsafe {
-            if preview.is_invalid() {
-                let parent = self.hwnd_parent.get();
-                let hwnd = CreateWindowExW(
+        if preview.is_invalid() {
+            let parent = self.hwnd_parent.get();
+            let hwnd = match unsafe {
+                CreateWindowExW(
                     WINDOW_EX_STYLE(0),       // dwExStyle: extended window styles (0 = none)
                     w!("BLP_PREVIEW_SQUARE"), // lpClassName: registered window class name to instantiate
                     None,                     // lpWindowName: window title/caption (None for child/untitled)
@@ -355,11 +374,22 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
                     None,                     // hMenu / hWndChildID: menu or child control ID (None = no menu / default ID)
                     None,                     // hInstance: module handle owning the window class/resources
                     None,                     // lpParam: pointer to CREATESTRUCT/any user data passed to WM_CREATE (None = no extra)
-                )?;
-                self.hwnd_preview.set(hwnd);
-                let _ = ShowWindow(hwnd, SW_SHOW);
-            } else {
-                let _ = SetWindowPos(
+                )
+            } {
+                Ok(r) => {
+                    log(&format!("  DoPreview => CreateWindowExW (0x{:X})", r.0 as usize));
+                    r
+                }
+                Err(e) => {
+                    log(&format!("  DoPreview => CreateWindowExW => ERR: {:?}", e));
+                    return Err(e);
+                }
+            };
+            self.hwnd_preview.set(hwnd);
+            log(&format!("  DoPreview => ShowWindow({})", unsafe { ShowWindow(hwnd, SW_SHOW) }.as_bool()));
+        } else {
+            match unsafe {
+                SetWindowPos(
                     preview,                                    // hWnd: handle of the window to move/resize (our child/canvas)
                     None,                                       // hWndInsertAfter: Z-order target (None/NULL → ignored with SWP_NOZORDER)
                     rc.left,                                    // X: new left position (ignored if SWP_NOMOVE is set)
@@ -367,16 +397,30 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
                     rc.right - rc.left,                         // cx: new width in pixels
                     rc.bottom - rc.top,                         // cy: new height in pixels
                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE, // uFlags: don't move, don't change Z-order, don't activate
-                );
-            }
+                )
+            } {
+                Ok(_) => log("  DoPreview => SetWindowPos => OK"),
+                Err(e) => log(&format!("  DoPreview => SetWindowPos => ERR: {:?}", e)),
+            };
         }
+
+        let preview = self.hwnd_preview.get();
+
+        log(format!(
+            "  DoPreview 0x{:X}:0x{:X} => RedrawWindow => {}", //
+            parent.0 as usize,
+            preview.0 as usize,
+            unsafe { RedrawWindow(Some(preview), None, None, RDW_INVALIDATE | RDW_INTERNALPAINT) }.as_bool()
+        ));
 
         Ok(())
     }
 
+    #[allow(non_snake_case)]
     fn Unload(&self) -> Result<()> {
-        log("BlpPreviewHandler::Unload");
+        log("Unload");
 
+        // Release IStream (if any)
         if self.stream.borrow().is_some() {
             log("  releasing IStream");
             self.stream.borrow_mut().take();
@@ -384,24 +428,37 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
             log("  no IStream to release");
         }
 
-        let child = self.hwnd_preview.get();
-        if !child.is_invalid() {
-            unsafe {
-                let _ = DestroyWindow(child);
-            }
-            self.hwnd_preview.set(HWND::default());
+        // Destroy preview window (same thread)
+        let preview = self.hwnd_preview.get();
+        if preview.is_invalid() {
+            log("  hwnd_preview is invalid (nothing to destroy)");
+            return Ok(());
         }
+
+        let alive = unsafe { IsWindow(Some(preview)).as_bool() };
+        log(&format!("  IsWindow(hwnd_preview) => {}", alive));
+        if alive {
+            match unsafe { DestroyWindow(preview) } {
+                Ok(_) => log("  DestroyWindow => OK"),
+                Err(e) => log(&format!("  DestroyWindow => ERR: {:?}", e)),
+            }
+        } else {
+            log("  window already destroyed by host");
+        }
+
+        // Always clear our handle to avoid double-destroy later
+        self.hwnd_preview.set(HWND::default());
         Ok(())
     }
 
     fn SetFocus(&self) -> Result<()> {
-        log("BlpPreviewHandler::SetFocus");
+        log("SetFocus");
         Ok(())
     }
 
     fn QueryFocus(&self) -> Result<HWND> {
         let hwnd = unsafe { GetFocus() };
-        log(&format!("BlpPreviewHandler::QueryFocus → 0x{:X}", hwnd.0 as usize));
+        log(&format!("QueryFocus → 0x{:X}", hwnd.0 as usize));
         Ok(hwnd)
     }
 
@@ -416,7 +473,7 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
                 (m.message, m.wParam.0, m.lParam.0)
             }
         };
-        log(&format!("BlpPreviewHandler::TranslateAccelerator (pmsg=0x{addr:X}, msg=0x{:X}, wParam=0x{:X}, lParam=0x{:X})", message, wparam, lparam));
+        log(&format!("TranslateAccelerator (pmsg=0x{addr:X}, msg=0x{:X}, wParam=0x{:X}, lParam=0x{:X})", message, wparam, lparam));
         Ok(())
     }
 }
@@ -432,9 +489,9 @@ impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
                 let raw = u.as_raw();
 
                 if slot.is_some() {
-                    log(&format!("BlpPreviewHandler::SetSite (site=0x{:X}) — replacing previous site", raw as usize));
+                    log(&format!("SetSite (site=0x{:X}) — replacing previous site", raw as usize));
                 } else {
-                    log(&format!("BlpPreviewHandler::SetSite (site=0x{:X}) — new site assigned", raw as usize));
+                    log(&format!("SetSite (site=0x{:X}) — new site assigned", raw as usize));
                 }
 
                 *slot = Some(u);
@@ -442,10 +499,10 @@ impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
 
             None => {
                 if slot.is_some() {
-                    log("BlpPreviewHandler::SetSite (site=None) — releasing previous site");
+                    log("SetSite (site=None) — releasing previous site");
                     slot.take();
                 } else {
-                    log("BlpPreviewHandler::SetSite (site=None) — no previous site to release");
+                    log("SetSite (site=None) — no previous site to release");
                 }
             }
         }
@@ -456,7 +513,7 @@ impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
     fn GetSite(&self, riid: *const GUID, ppv: *mut *mut c_void) -> Result<()> {
         // Просто логируем входные аргументы; реализация — заглушка.
         let riid_val = unsafe { riid.as_ref().cloned() };
-        log(&format!("BlpPreviewHandler::GetSite (riid={:?}, ppv={:?})", riid_val, ppv));
+        log(&format!("GetSite (riid={:?}, ppv={:?})", riid_val, ppv));
         Err(E_NOTIMPL.into())
     }
 }
@@ -465,14 +522,13 @@ impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
 #[allow(non_snake_case)]
 impl IOleWindow_Impl for BlpPreviewHandler_Impl {
     fn GetWindow(&self) -> Result<HWND> {
-        // Отдаём parent (превью-окна пока нет) — это именно «коробка» с логами
         let hwnd = self.hwnd_parent.get();
-        log(&format!("BlpPreviewHandler::GetWindow → HWND(0x{:X})", hwnd.0 as usize));
+        log(&format!("GetWindow → HWND(0x{:X})", hwnd.0 as usize));
         Ok(hwnd)
     }
 
     fn ContextSensitiveHelp(&self, fEnterMode: BOOL) -> Result<()> {
-        log(&format!("BlpPreviewHandler::ContextSensitiveHelp (fEnterMode={})", fEnterMode.0));
+        log(&format!("ContextSensitiveHelp (fEnterMode={})", fEnterMode.as_bool()));
         Err(E_NOTIMPL.into())
     }
 }

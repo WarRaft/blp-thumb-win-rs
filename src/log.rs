@@ -74,12 +74,11 @@ pub fn log(message: impl AsRef<str>) {
         return;
     }
 
-    let pid = std::process::id();
     let tid = unsafe { GetCurrentThreadId() };
 
     // Префикс для DebugView
     let mut line = String::with_capacity(32 + msg.len());
-    let _ = write!(line, "[{}:{}] [blp-thumb] {}", pid, tid, msg);
+    let _ = write!(line, "[{}] {}", tid, msg);
     ods_immediate(&line);
 }
 
