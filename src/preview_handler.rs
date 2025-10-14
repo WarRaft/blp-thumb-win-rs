@@ -5,7 +5,7 @@ use std::{
     ffi::c_void,
     ptr,
 };
-use windows::Win32::Graphics::Gdi::{RDW_INTERNALPAINT, RDW_INVALIDATE, RedrawWindow};
+use windows::Win32::Graphics::Gdi::{RedrawWindow, RDW_ERASE, RDW_INTERNALPAINT, RDW_INVALIDATE, RDW_UPDATENOW};
 use windows::Win32::UI::WindowsAndMessaging::GetParent;
 use windows::{
     Win32::{
@@ -42,6 +42,7 @@ use windows::{
                 PropertiesSystem::{IInitializeWithStream, IInitializeWithStream_Impl},
             },
             WindowsAndMessaging::{
+                CS_DBLCLKS,
                 CS_HREDRAW,
                 CS_VREDRAW,
                 CreateWindowExW, //
@@ -64,12 +65,14 @@ use windows::{
                 WM_CREATE,
                 WM_DESTROY,
                 WM_ERASEBKGND,
+                WM_LBUTTONDBLCLK,
                 WM_MOVE,
                 WM_NCCALCSIZE,
                 WM_NCCREATE,
                 WM_NCDESTROY,
                 WM_NCPAINT,
                 WM_PAINT,
+                WM_SETCURSOR,
                 WM_SHOWWINDOW,
                 WM_SIZE,
                 WM_WINDOWPOSCHANGED,
@@ -93,7 +96,7 @@ fn register_class_once() -> Result<()> {
         .get_or_init(|| unsafe {
             let wc = WNDCLASSEXW {
                 cbSize: size_of::<WNDCLASSEXW>() as u32, //
-                style: WNDCLASS_STYLES(CS_HREDRAW.0 | CS_VREDRAW.0),
+                style: WNDCLASS_STYLES(CS_HREDRAW.0 | CS_VREDRAW.0 | CS_DBLCLKS.0),
                 lpfnWndProc: Some(wndproc),
                 hInstance: GetModuleHandleW(None).ok().unwrap().into(),
                 hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
@@ -131,6 +134,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             WM_WINDOWPOSCHANGED => "WM_WINDOWPOSCHANGED",
             WM_MOVE => "WM_MOVE",
             WM_SHOWWINDOW => "WM_SHOWWINDOW",
+            0x0090 => "WM_UAHDESTROYWINDOW",
+            WM_SETCURSOR => "WM_SETCURSOR",
+            WM_LBUTTONDBLCLK => "WM_LBUTTONDBLCLK",
 
             WM_NCCALCSIZE => "WM_NCCALCSIZE",
             WM_SIZE => "WM_SIZE",
@@ -150,9 +156,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
     ));
 
     match msg {
-        WM_ERASEBKGND => LRESULT(0),
-        WM_SHOWWINDOW => LRESULT(0),
-        WM_NCPAINT => LRESULT(1),
+        WM_ERASEBKGND => LRESULT(1),
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
@@ -205,13 +209,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             LRESULT(0)
         }
 
-        WM_NCCALCSIZE => LRESULT(0),
         WM_SIZE => {
-            let wpx = (l.0 & 0xFFFF) as i32; // LOWORD(lParam) = width
-            let hpx = ((l.0 >> 16) & 0xFFFF) as i32; // HIWORD(lParam) = height
-            log(&format!("WM_SIZE: {}x{}", wpx, hpx));
-
-            LRESULT(0)
+            let lp = l.0 as u32;
+            let width = (lp & 0xFFFF) as i32;
+            let height = ((lp >> 16) & 0xFFFF) as i32;
+            log(&format!("WM_SIZE lParam=0x{:X} => {}x{}", lp, width, height));
+            unsafe { DefWindowProcW(hwnd, msg, w, l) }
         }
 
         _ => unsafe { DefWindowProcW(hwnd, msg, w, l) },
@@ -338,6 +341,21 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
                 Ok(_) => log("  SetRect => SetWindowPos => OK"),
                 Err(e) => log(&format!("  SetRect => SetWindowPos => ERR: {:?}", e)),
             };
+
+            if rc.right > rc.left && rc.bottom > rc.top {
+                let ok = unsafe {
+                    RedrawWindow(
+                        Some(preview),
+                        None,
+                        None,
+                        RDW_INVALIDATE | RDW_ERASE,
+                    )
+                }
+                .as_bool();
+                log(&format!("  SetRect => RedrawWindow => {}", ok));
+            } else {
+                log("  SetRect => RedrawWindow skipped (zero area)");
+            }
         }
         Ok(())
     }
@@ -387,6 +405,21 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
             };
             self.hwnd_preview.set(hwnd);
             log(&format!("  DoPreview => ShowWindow({})", unsafe { ShowWindow(hwnd, SW_SHOW) }.as_bool()));
+
+            if rc.right > rc.left && rc.bottom > rc.top {
+                let ok = unsafe {
+                    RedrawWindow(
+                        Some(hwnd),
+                        None,
+                        None,
+                        RDW_INVALIDATE | RDW_ERASE | RDW_INTERNALPAINT | RDW_UPDATENOW,
+                    )
+                }
+                .as_bool();
+                log(&format!("  DoPreview => initial RedrawWindow => {}", ok));
+            } else {
+                log("  DoPreview => initial RedrawWindow skipped (zero area)");
+            }
         } else {
             match unsafe {
                 SetWindowPos(
@@ -402,15 +435,29 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
                 Ok(_) => log("  DoPreview => SetWindowPos => OK"),
                 Err(e) => log(&format!("  DoPreview => SetWindowPos => ERR: {:?}", e)),
             };
+
+            if rc.right > rc.left && rc.bottom > rc.top {
+                let ok = unsafe {
+                    RedrawWindow(
+                        Some(preview),
+                        None,
+                        None,
+                        RDW_INVALIDATE | RDW_ERASE,
+                    )
+                }
+                .as_bool();
+                log(&format!("  DoPreview => RedrawWindow after SetWindowPos => {}", ok));
+            } else {
+                log("  DoPreview => RedrawWindow after SetWindowPos skipped (zero area)");
+            }
         }
 
         let preview = self.hwnd_preview.get();
 
         log(format!(
-            "  DoPreview 0x{:X}:0x{:X} => RedrawWindow => {}", //
+            "  DoPreview 0x{:X}:0x{:X} complete",
             parent.0 as usize,
-            preview.0 as usize,
-            unsafe { RedrawWindow(Some(preview), None, None, RDW_INVALIDATE | RDW_INTERNALPAINT) }.as_bool()
+            preview.0 as usize
         ));
 
         Ok(())
