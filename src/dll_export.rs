@@ -1,6 +1,6 @@
-use crate::class_factory::{BlpClassFactory, ProviderKind};
+use crate::class_factory::BlpClassFactory;
 use crate::utils::guid::GuidExt;
-use crate::{CLASS_E_CLASSNOTAVAILABLE, CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DLL_LOCK_COUNT};
+use crate::{CLASS_E_CLASSNOTAVAILABLE, CLSID_BLP_THUMB, DLL_LOCK_COUNT};
 // .to_braced_upper() for &GUID
 
 use std::ffi::c_void;
@@ -66,8 +66,6 @@ pub extern "system" fn DllGetClassObject(rclsid: *const GUID, riid: *const GUID,
     if let Some(g) = unsafe { rclsid.as_ref() } {
         let name = if *g == CLSID_BLP_THUMB {
             "CLSID_BLP_THUMB"
-        } else if *g == CLSID_BLP_PREVIEW {
-            "CLSID_BLP_PREVIEW"
         } else {
             "CLSID(unknown)"
         };
@@ -108,10 +106,7 @@ pub extern "system" fn DllGetClassObject(rclsid: *const GUID, riid: *const GUID,
 
     let factory = if r == CLSID_BLP_THUMB {
         let _ = log("DllGetClassObject: class match -> Thumbnail provider");
-        BlpClassFactory::new(ProviderKind::Thumbnail)
-    } else if r == CLSID_BLP_PREVIEW {
-        let _ = log("DllGetClassObject: class match -> Preview handler");
-        BlpClassFactory::new(ProviderKind::Preview)
+        BlpClassFactory::new()
     } else {
         let _ = log("DllGetClassObject: CLASS_E_CLASSNOTAVAILABLE");
         return CLASS_E_CLASSNOTAVAILABLE;

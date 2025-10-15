@@ -8,17 +8,16 @@ https://github.com/WarRaft/blp-rs for format details and decoding code used by
 the DLL.
 
 blp-thumb-win-rs provides native Windows Explorer integration for BLP image files.
-It implements both a thumbnail handler and a preview handler as a COM DLL written in Rust,
-and ships a small installer that registers the COM classes and shell bindings so
-Explorer will show thumbnails and preview-pane content for `.blp` files.
+It implements a thumbnail handler as a COM DLL written in Rust and ships a small
+installer that registers the shell bindings so Explorer shows rich thumbnails for
+`.blp` files. The preview pane is configured to reuse this thumbnail instead of a
+dedicated preview handler.
 
 ## What it does
 
-- Builds a COM DLL (`blp_thumb_win.dll`) which exposes two COM classes:
-  - A thumbnail provider (BLP thumbnail handler)
-  - A preview handler (BLP preview handler)
+- Builds a COM DLL (`blp_thumb_win.dll`) which exposes a thumbnail provider.
 - Produces an installer executable that embeds the DLL and writes registry
-  entries (HKLM/HKCU) to register the handlers and helper keys.
+  entries (HKCU) to register the handler and helper keys for the current user.
 - Adds verbose registry-logging while installing so you can inspect exactly which
   keys and values are written.
 
@@ -42,22 +41,18 @@ Artifacts will be placed in `./bin/`:
 ## Install on Windows (recommended)
 
 Copy the `blp_thumb_win.dll` and `blp-thumb-win-installer.exe` to a Windows machine
-and run the installer. For system-wide (HKLM) registration, run the installer as
-Administrator. The installer also writes to HKCU so per-user registration will
-work without elevation.
+and run the installer. Registration is performed in HKCU for the current user, so
+no elevation is required.
 
 After running the installer, restart Explorer or use the `Restart Explorer`
 action in the provided installer UI so Explorer picks up the new handlers.
 
 ## Registry keys written by the installer (ASCII tree)
 
-Below is the registry layout that the installer creates or updates. The
-installer writes to either HKLM or HKCU depending on whether you choose system
-or per-user scope; replace `HKLM/HKCU` with the chosen scope when inspecting
-registry paths.
+Below is the registry layout that the installer creates or updates for HKCU.
 
 ```
-HKLM / HKCU
+HKCU
 └─ Software
    └─ Classes
       ├─ .blp
@@ -67,7 +62,7 @@ HKLM / HKCU
       ├─ WarRaft.BLP                            ; ProgID
       │  (Default) = BLP Thumbnail Provider
       │  ShellEx
-      │  └─ {8895B1C6-B41F-4C1C-A562-0D564250836F} = {CLSID_BLP_PREVIEW}
+      │  └─ {8895B1C6-B41F-4C1C-A562-0D564250836F} = {CLSID_BLP_THUMB}
       │  ThumbnailCutoff, TypeOverlay, etc. (optional)
       └─ CLSID
          ├─ {CLSID_BLP_THUMB}
@@ -79,39 +74,22 @@ HKLM / HKCU
          │     ProgID = WarRaft.BLP
          │  Implemented Categories
          │  └─ {E357FCCD-A995-4576-B01F-234630154E96}
-         └─ {CLSID_BLP_PREVIEW}
-            (Default) = BLP Preview Handler
-            DisplayName = @blp_thumb_win.dll,-101    ; optional but helpful
-            AppID = {534A1E02-D58F-44f0-B58B-36CBED287C7C}
-            DisableProcessIsolation = 1
-            InprocServer32
-            └─ (Default) = %LOCALAPPDATA%\blp-thumb-win\blp_thumb_win.dll
-               ThreadingModel = Apartment
-               ProgID = WarRaft.BLP
-            Implemented Categories
-            └─ {8895B1C6-B41F-4C1C-A562-0D564250836F}
+         └─ (legacy preview handler entries removed)
 ```
 
-And Explorer lists used by the system:
+Explorer lists touched by the installer (HKCU):
 
-HKLM / HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers
+HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers
    (.blp) = {CLSID_BLP_THUMB}
 
-HKLM / HKCU\Software\Microsoft\Windows\CurrentVersion\PreviewHandlers
-   {CLSID_BLP_PREVIEW} = "BLP Preview Handler"
-
-Shell Extensions Approved list (used for shell extensions):
-
-HKLM / HKCU\Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved
+HKCU\Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved
    {CLSID_BLP_THUMB} = "BLP Thumbnail Provider"
-   {CLSID_BLP_PREVIEW} = "BLP Preview Handler"
 
 ## Notes & troubleshooting
 
 - If Explorer does not pick up handlers immediately, restart Explorer or
   log out/in. The installer attempts to clear shell caches and notifies the
   shell, but a restart is sometimes needed.
-- For system-wide registration (HKLM) you must run the installer elevated.
 - The installer writes readable logs describing every registry write; check
   those logs if registration appears to fail.
 
@@ -126,10 +104,8 @@ Contributions are welcome. The main areas of work are:
 
 This project performs direct modifications to the Windows registry to
 register shell extensions and COM classes. Registry modifications can affect
-system behavior and may require administrative privileges when writing to
-HKLM. Use this software at your own risk. Before running the installer on any
-system (especially production machines), make a backup of important data and
-consider exporting affected registry branches (for example `HKLM\\Software\\Classes`)
-so you can restore them if needed. The author and maintainers accept no
-responsibility for data loss or system damage resulting from running this
-installer.
+system behavior. Use this software at your own risk. Before running the
+installer on any system (especially production machines), make a backup of
+important data and consider exporting affected registry branches so you can
+restore them if needed. The author and maintainers accept no responsibility
+for data loss or system damage resulting from running this installer.

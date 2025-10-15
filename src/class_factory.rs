@@ -1,6 +1,5 @@
 use crate::DLL_LOCK_COUNT;
 use crate::log::log;
-use crate::preview_handler::BlpPreviewHandler;
 use crate::thumbnail_provider::BlpThumbProvider;
 use crate::utils::guid::GuidExt;
 use std::ffi::c_void;
@@ -12,14 +11,12 @@ use windows_implement::implement;
 
 #[inline]
 fn iid_name(iid: &GUID) -> &'static str {
-    use windows::Win32::UI::Shell::{IInitializeWithItem, IPreviewHandler, IThumbnailProvider, PropertiesSystem::IInitializeWithFile, PropertiesSystem::IInitializeWithStream};
+    use windows::Win32::UI::Shell::{IInitializeWithItem, IThumbnailProvider, PropertiesSystem::IInitializeWithFile, PropertiesSystem::IInitializeWithStream};
     use windows_core::Interface;
     if *iid == <IUnknown as Interface>::IID {
         "IUnknown"
     } else if *iid == <IThumbnailProvider as Interface>::IID {
         "IThumbnailProvider"
-    } else if *iid == <IPreviewHandler as Interface>::IID {
-        "IPreviewHandler"
     } else if *iid == <IInitializeWithItem as Interface>::IID {
         "IInitializeWithItem"
     } else if *iid == <IInitializeWithStream as Interface>::IID {
@@ -39,20 +36,14 @@ fn ptr_hex<T>(p: *const T) -> String {
     s
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum ProviderKind {
-    Thumbnail,
-    Preview,
-}
-
 #[implement(windows::Win32::System::Com::IClassFactory)]
 pub struct BlpClassFactory {
-    kind: ProviderKind,
+    _placeholder: (),
 }
 
 impl BlpClassFactory {
-    pub fn new(kind: ProviderKind) -> Self {
-        Self { kind }
+    pub fn new() -> Self {
+        Self { _placeholder: () }
     }
 }
 
@@ -66,7 +57,7 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
     ) -> windows::core::Result<()> {
         use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER};
         use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithStream};
-        use windows::Win32::UI::Shell::{IInitializeWithItem, IPreviewHandler, IThumbnailProvider};
+        use windows::Win32::UI::Shell::{IInitializeWithItem, IThumbnailProvider};
         use windows::core::{Error, IUnknown, Interface};
 
         // Log call and raw args first
@@ -78,7 +69,7 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
             let g = gref.to_braced_upper();
             format!("riid={} {}", name, g)
         };
-        log(format!("IClassFactory::CreateInstance kind={:?} outer=(aggregation unsupported) {} ppv={}", self.kind, riid_log, ptr_hex(ppv),));
+        log(format!("IClassFactory::CreateInstance outer=(aggregation unsupported) {} ppv={}", riid_log, ptr_hex(ppv),));
 
         if ppv.is_null() || riid.is_null() {
             log("IClassFactory::CreateInstance result=E_POINTER");
@@ -90,33 +81,16 @@ impl IClassFactory_Impl for BlpClassFactory_Impl {
         log("IClassFactory::CreateInstance ppv <- NULL");
 
         // Construct the concrete object
-        let unk: IUnknown = match self.kind {
-            ProviderKind::Thumbnail => {
-                log("IClassFactory::CreateInstance new=BlpThumbProvider");
-                BlpThumbProvider::new().into()
-            }
-            ProviderKind::Preview => {
-                log("IClassFactory::CreateInstance new=BlpPreviewHandler");
-                BlpPreviewHandler::new().into()
-            }
+        let unk: IUnknown = {
+            log("IClassFactory::CreateInstance new=BlpThumbProvider");
+            BlpThumbProvider::new().into()
         };
 
         unsafe {
-            match self.kind {
-                ProviderKind::Thumbnail => {
-                    if *riid == <IThumbnailProvider as Interface>::IID {
-                        log("IClassFactory::CreateInstance returning IThumbnailProvider");
-                        *ppv = unk.cast::<IThumbnailProvider>()?.into_raw();
-                        return Ok(());
-                    }
-                }
-                ProviderKind::Preview => {
-                    if *riid == <IPreviewHandler as Interface>::IID {
-                        log("IClassFactory::CreateInstance returning IPreviewHandler");
-                        *ppv = unk.cast::<IPreviewHandler>()?.into_raw();
-                        return Ok(());
-                    }
-                }
+            if *riid == <IThumbnailProvider as Interface>::IID {
+                log("IClassFactory::CreateInstance returning IThumbnailProvider");
+                *ppv = unk.cast::<IThumbnailProvider>()?.into_raw();
+                return Ok(());
             }
 
             if *riid == <IInitializeWithItem as Interface>::IID {

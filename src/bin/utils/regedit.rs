@@ -139,6 +139,7 @@ impl<'a> Rk<'a> {
         self.key.get_value(name)
     }
 
+    #[allow(dead_code)]
     pub fn delete_value(&self, name: &str) -> io::Result<()> {
         match self.key.delete_value(name) {
             Ok(()) => {

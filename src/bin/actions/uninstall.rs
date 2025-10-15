@@ -2,42 +2,14 @@ use crate::utils::notify_shell_assoc::notify_shell_assoc;
 
 use blp_thumb_win::log::log;
 use blp_thumb_win::utils::guid::GuidExt;
-use blp_thumb_win::{CLSID_BLP_PREVIEW, CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, SHELL_PREVIEW_HANDLER_CATID, SHELL_THUMB_HANDLER_CATID};
+use blp_thumb_win::{
+    CLSID_BLP_THUMB, DEFAULT_EXT, DEFAULT_PROGID, SHELL_PREVIEW_HANDLER_CATID, SHELL_THUMB_HANDLER_CATID,
+};
 use std::io;
-use winreg::RegKey;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
+use winreg::RegKey;
 
-/** ============================================================================
-Per-user uninstall of BLP thumbnail/preview handlers (HKCU only).
-
-Removes only activation/registration points that can load our DLL:
-
-1) CLSID registrations:
-   - HKCU\Software\Classes\CLSID\{CLSID_BLP_THUMB}
-   - HKCU\Software\Classes\CLSID\{CLSID_BLP_PREVIEW}
-
-2) Explorer “Approved” list values for our CLSIDs.
-
-3) ShellEx bindings (only if they point to our CLSIDs):
-   - HKCU\Software\Classes\.blp\ShellEx\{ThumbCat} / {PreviewCat}
-   - HKCU\Software\Classes\SystemFileAssociations\.blp\ShellEx\{...}
-   - HKCU\Software\Classes\WarRaft.BLP\ShellEx\{...}
-
-4) Explorer handler lists:
-   - HKCU\...\Explorer\ThumbnailHandlers → delete value ".blp" if it equals our CLSID
-   - HKCU\...\Explorer\PreviewHandlers   → delete value named {CLSID_BLP_PREVIEW}
-
-5) Persistent handler glue we added to force preview through us:
-   - HKCU\Software\Classes\.blp\PersistentHandler  (only if Default == {CLSID_BLP_PREVIEW})
-   - HKCU\Software\Classes\CLSID\{CLSID_BLP_PREVIEW}\PersistentAddinsRegistered\{PreviewCat}
-
-Intentionally left intact (to avoid breaking associations):
-- HKCU\Software\Classes\.blp (Default/Content Type/PerceivedType)
-- HKCU\Software\Classes\WarRaft.BLP (root, except ShellEx bindings)
-- OpenWith* /UserChoice/Applications
-
-Missing keys are treated as already-clean; all ops are per-user (HKCU).
-============================================================================ */
+const LEGACY_PREVIEW_CLSID: &str = "{8FC2C3AB-5B0B-4DB0-BC2E-9D6DBFBB8EAA}";
 
 pub fn uninstall() -> io::Result<()> {
     if let Err(err) = uninstall_inner() {
@@ -47,23 +19,22 @@ pub fn uninstall() -> io::Result<()> {
 }
 
 fn uninstall_inner() -> io::Result<()> {
-    log("Uninstall (current user): start — removing activation points.");
+    log("Uninstall (current user): start — removing shell bindings.");
 
     let root = RegKey::predef(HKEY_CURRENT_USER);
-
-    let ext = DEFAULT_EXT; // ".blp"
+    let ext = DEFAULT_EXT;
     let progid = DEFAULT_PROGID;
 
     let thumb_clsid = CLSID_BLP_THUMB.to_braced_upper();
-    let preview_clsid = CLSID_BLP_PREVIEW.to_braced_upper();
     let thumb_catid = SHELL_THUMB_HANDLER_CATID.to_braced_upper();
     let preview_catid = SHELL_PREVIEW_HANDLER_CATID.to_braced_upper();
 
-    // Helpers
     let del_tree = |path: &str| -> io::Result<()> {
         match root.delete_subkey_all(path) {
             Ok(()) => log(format!("Removed key tree: {}", path)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!("Key missing (skip): {}", path)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                log(format!("Key missing (skip): {}", path));
+            }
             Err(e) => return Err(e),
         }
         Ok(())
@@ -73,109 +44,69 @@ fn uninstall_inner() -> io::Result<()> {
         match root.open_subkey_with_flags(key_path, KEY_READ | KEY_SET_VALUE) {
             Ok(key) => match key.delete_value(value_name) {
                 Ok(()) => log(format!("Removed value: {} \\ {}", key_path, value_name)),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!("Value missing (skip): {} \\ {}", key_path, value_name)),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    log(format!("Value missing (skip): {} \\ {}", key_path, value_name));
+                }
                 Err(e) => return Err(e),
             },
-            Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!("Key missing (skip): {}", key_path)),
-            Err(e) => return Err(e),
-        }
-        Ok(())
-    };
-
-    let del_sub_if_default_eq = |subkey_path: &str, expect: &str| -> io::Result<()> {
-        match root.open_subkey(subkey_path) {
-            Ok(k) => {
-                let cur: Result<String, _> = k.get_value("");
-                if let Ok(mut v) = cur {
-                    v = v.trim_matches(char::from(0)).trim().to_string();
-                    if v.eq_ignore_ascii_case(expect) {
-                        del_tree(subkey_path)?;
-                    } else {
-                        log(format!("Preserving {} (Default != ours): '{}'", subkey_path, v));
-                    }
-                } else {
-                    // no default → safe to remove empty node
-                    del_tree(subkey_path)?;
-                }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                log(format!("Key missing (skip): {}", key_path));
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => log(format!("Missing (skip): {}", subkey_path)),
             Err(e) => return Err(e),
         }
         Ok(())
     };
 
-    let del_shellex_if_matches = |base: &str, catid: &str, clsid: &str| -> io::Result<()> {
-        let cat_path = format!(r"{}\ShellEx\{}", base, catid);
-        del_sub_if_default_eq(&cat_path, clsid)
+    let remove_shellex = |root_path: &str, cat: &str| -> io::Result<()> {
+        let target = format!(r"{}\ShellEx\{}", root_path, cat);
+        del_tree(&target)
     };
 
-    // 1) Explorer “Approved”
-    {
-        let approved = r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved";
-        del_value(approved, thumb_clsid.as_str())?;
-        del_value(approved, preview_clsid.as_str())?;
-    }
+    // Shell Extensions Approved entries
+    let approved_path = r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved";
+    del_value(approved_path, thumb_clsid.as_str())?;
+    del_value(approved_path, LEGACY_PREVIEW_CLSID)?;
 
-    // 2) ShellEx bindings (.blp / SFA\.blp / ProgID)
-    del_shellex_if_matches(&format!(r"Software\Classes\{}", ext), &thumb_catid, &thumb_clsid)?;
-    del_shellex_if_matches(&format!(r"Software\Classes\{}", ext), &preview_catid, &preview_clsid)?;
+    // ShellEx bindings (.blp / ProgID / SFA)
+    remove_shellex(&format!(r"Software\Classes\{}", ext), &thumb_catid)?;
+    remove_shellex(&format!(r"Software\Classes\{}", ext), &preview_catid)?;
+    remove_shellex(&format!(r"Software\Classes\{}", progid), &thumb_catid)?;
+    remove_shellex(&format!(r"Software\Classes\{}", progid), &preview_catid)?;
+    remove_shellex(
+        &format!(r"Software\Classes\SystemFileAssociations\{}", ext),
+        &thumb_catid,
+    )?;
+    remove_shellex(
+        &format!(r"Software\Classes\SystemFileAssociations\{}", ext),
+        &preview_catid,
+    )?;
 
-    del_shellex_if_matches(&format!(r"Software\Classes\SystemFileAssociations\{}", ext), &thumb_catid, &thumb_clsid)?;
-    del_shellex_if_matches(&format!(r"Software\Classes\SystemFileAssociations\{}", ext), &preview_catid, &preview_clsid)?;
+    // Explorer handler lists
+    del_value(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers",
+        ext,
+    )?;
+    del_value(
+        r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers",
+        LEGACY_PREVIEW_CLSID,
+    )?;
+    del_value(
+        r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers",
+        thumb_clsid.as_str(),
+    )?;
 
-    del_shellex_if_matches(&format!(r"Software\Classes\{}", progid), &thumb_catid, &thumb_clsid)?;
-    del_shellex_if_matches(&format!(r"Software\Classes\{}", progid), &preview_catid, &preview_clsid)?;
-
-    // 3) Explorer handler lists
-    {
-        // ThumbnailHandlers: remove ".blp" mapping if equals ours
-        let th_path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers";
-        match root.open_subkey_with_flags(th_path, KEY_READ | KEY_SET_VALUE) {
-            Ok(key) => match key.get_value::<String, _>(ext) {
-                Ok(mut cur) => {
-                    cur = cur.trim_matches(char::from(0)).trim().to_string();
-                    if cur.eq_ignore_ascii_case(thumb_clsid.as_str()) {
-                        key.delete_value(ext)?;
-                        log(format!("Removed ThumbnailHandlers mapping: {} -> {}", ext, thumb_clsid));
-                    } else {
-                        log(format!("Preserving ThumbnailHandlers mapping ({} -> {}), not ours", ext, cur));
-                    }
-                }
-                Err(e) if e.kind() == io::ErrorKind::NotFound => log("ThumbnailHandlers mapping missing (skip)"),
-                Err(e) => return Err(e),
-            },
-            Err(e) if e.kind() == io::ErrorKind::NotFound => log("ThumbnailHandlers key missing (skip)"),
-            Err(e) => return Err(e),
-        }
-
-        // PreviewHandlers: delete value named with our preview CLSID
-        let ph_path = r"Software\Microsoft\Windows\CurrentVersion\PreviewHandlers";
-        del_value(ph_path, preview_clsid.as_str())?;
-    }
-
-    // 4) Persistent handler glue
-    {
-        // .blp\PersistentHandler (only if Default matches our preview CLSID)
-        let ph_ext_path = format!(r"Software\Classes{}\PersistentHandler", ext);
-        // careful: ensure backslash between Classes and ext
-        let ph_ext_path = ph_ext_path.replace("Classes.", "Classes\\.");
-        del_sub_if_default_eq(&ph_ext_path, preview_clsid.as_str())?;
-
-        // CLSID\{PREVIEW}\PersistentAddinsRegistered\{PreviewCat}
-        let par_cat = format!(r"Software\Classes\CLSID\{}\PersistentAddinsRegistered\{}", preview_clsid, preview_catid);
-        del_tree(&par_cat)?;
-        // If PersistentAddinsRegistered is now empty, remove the parent as well (best-effort).
-        let par_root = format!(r"Software\Classes\CLSID\{}\PersistentAddinsRegistered", preview_clsid);
-        let _ = del_tree(&par_root);
-    }
-
-    // 5) CLSID trees
+    // CLSID trees (.thumb and legacy preview)
     del_tree(&format!(r"Software\Classes\CLSID\{}", thumb_clsid))?;
-    del_tree(&format!(r"Software\Classes\CLSID\{}", preview_clsid))?;
+    del_tree(&format!(r"Software\Classes\CLSID\{}", LEGACY_PREVIEW_CLSID))?;
 
-    // 6) Notify shell
+    // Legacy AppID remnants
+    del_tree(&format!(r"Software\Classes\AppID\{}", LEGACY_PREVIEW_CLSID))?;
+    del_tree(r"Software\Classes\AppID\prevhost.exe")?;
+
+    // File-type persistent handler glue
+    del_tree(&format!(r"Software\Classes\{}\PersistentHandler", ext))?;
+
     notify_shell_assoc("uninstall");
-
-    log("Uninstall completed (HKCU). DLL activation points removed; associations left intact.");
+    log("Uninstall completed (HKCU). Thumbnail preview bindings removed.");
     Ok(())
 }
