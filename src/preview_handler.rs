@@ -1,11 +1,11 @@
 use crate::log::log;
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::{
     cell::{Cell, RefCell},
     ffi::c_void,
     ptr,
 };
-use windows::Win32::Graphics::Gdi::{RedrawWindow, RDW_ERASE, RDW_INTERNALPAINT, RDW_INVALIDATE, RDW_UPDATENOW};
 use windows::Win32::UI::WindowsAndMessaging::GetParent;
 use windows::{
     Win32::{
@@ -15,6 +15,7 @@ use windows::{
             GetLastError, //
             LPARAM,
             LRESULT,
+            S_FALSE,
             WPARAM,
         },
         Foundation::{E_NOTIMPL, HWND, RECT},
@@ -27,6 +28,8 @@ use windows::{
             FillRect,
             GetSysColorBrush,
             HGDIOBJ,
+            InvalidateRect,
+            LOGFONTW,
             PAINTSTRUCT,
         },
         System::{
@@ -38,7 +41,11 @@ use windows::{
         UI::{
             Input::KeyboardAndMouse::GetFocus,
             Shell::{
-                IPreviewHandler, IPreviewHandler_Impl,
+                IPreviewHandler,
+                IPreviewHandlerVisuals,
+                IPreviewHandlerVisuals_Impl,
+                IPreviewHandlerFrame,
+                IPreviewHandler_Impl,
                 PropertiesSystem::{IInitializeWithStream, IInitializeWithStream_Impl},
             },
             WindowsAndMessaging::{
@@ -56,7 +63,6 @@ use windows::{
                 RegisterClassExW,
                 SW_SHOW,
                 SWP_NOACTIVATE,
-                SWP_NOMOVE,
                 SWP_NOZORDER,
                 SetParent,
                 SetWindowPos,
@@ -90,6 +96,70 @@ use windows::{
 use windows_result::HRESULT;
 
 static CLASS_REG: OnceLock<Result<()>> = OnceLock::new();
+
+#[derive(Clone, Copy)]
+struct PreviewVisual {
+    color: COLORREF,
+    image_size: (i32, i32),
+}
+
+impl PreviewVisual {
+    fn describe(&self) -> String {
+        format!(
+            "color=0x{:06X} image_size={}x{}", // COLORREF is 0x00bbggrr
+            self.color.0 & 0x00FF_FFFF,
+            self.image_size.0,
+            self.image_size.1
+        )
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct WindowVisualState {
+    preview: Option<PreviewVisual>,
+    background: Option<COLORREF>,
+    text: Option<COLORREF>,
+}
+
+fn visuals_store() -> &'static Mutex<HashMap<isize, WindowVisualState>> {
+    static STORE: OnceLock<Mutex<HashMap<isize, WindowVisualState>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn hwnd_key(hwnd: HWND) -> isize {
+    hwnd.0 as isize
+}
+
+fn update_window_visual_state<F>(hwnd: HWND, updater: F)
+where
+    F: FnOnce(&mut WindowVisualState),
+{
+    if hwnd.is_invalid() {
+        return;
+    }
+    let mut map = visuals_store().lock().expect("visuals_store lock poisoned");
+    let entry = map.entry(hwnd_key(hwnd)).or_default();
+    updater(entry);
+}
+
+fn get_window_visual_state(hwnd: HWND) -> Option<WindowVisualState> {
+    if hwnd.is_invalid() {
+        return None;
+    }
+    visuals_store()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&hwnd_key(hwnd)).copied())
+}
+
+fn clear_window_visual_state(hwnd: HWND) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    if let Ok(mut map) = visuals_store().lock() {
+        map.remove(&hwnd_key(hwnd));
+    }
+}
 
 fn register_class_once() -> Result<()> {
     CLASS_REG
@@ -156,57 +226,98 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
     ));
 
     match msg {
-        WM_ERASEBKGND => LRESULT(1),
+        WM_ERASEBKGND => unsafe { DefWindowProcW(hwnd, msg, w, l) },
+        WM_SHOWWINDOW => {
+            if w.0 != 0 {
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                log("WM_SHOWWINDOW -> InvalidateRect(false)");
+            }
+            unsafe { DefWindowProcW(hwnd, msg, w, l) }
+        }
+        WM_WINDOWPOSCHANGED => {
+            let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            unsafe { DefWindowProcW(hwnd, msg, w, l) }
+        }
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
 
-            // client rect
             let mut rc = RECT::default();
             let _ = unsafe { GetClientRect(hwnd, &mut rc) };
             let cw = rc.right - rc.left;
             let ch = rc.bottom - rc.top;
 
-            // log sizes every time
-            log(&format!("WM_PAINT: client {}x{} (l={}, t={}, r={}, b={})", cw, ch, rc.left, rc.top, rc.right, rc.bottom));
-
-            // skip drawing when size is zero (but still EndPaint!)
             if cw <= 0 || ch <= 0 {
+                log(&format!("WM_PAINT: client {}x{} (empty); skipping", cw, ch));
                 let _ = unsafe { EndPaint(hwnd, &ps) };
                 return LRESULT(0);
             }
 
-            // background
-            let _ = unsafe { FillRect(hdc, &rc, GetSysColorBrush(COLOR_WINDOW)) };
+            let stored_state = get_window_visual_state(hwnd).unwrap_or_default();
+            let bg_color = stored_state.background;
+            let visual = stored_state.preview;
+            let text_color = stored_state.text;
 
-            // square geometry
-            let side = (cw.min(ch) * 3) / 5;
-            let dx = rc.left + (cw - side) / 2;
-            let dy = rc.top + (ch - side) / 2;
-            let sq = RECT { left: dx, top: dy, right: dx + side, bottom: dy + side };
-
-            // pseudo-random not-white color (time-based)
-            let t = unsafe { GetTickCount() };
-            let mut r = (t & 0xFF) as u8;
-            let mut g = ((t >> 8) & 0xFF) as u8;
-            let mut b = ((t >> 16) & 0xFF) as u8;
-            if r > 230 && g > 230 && b > 230 {
-                r = r.saturating_sub(80);
-                g = g.saturating_sub(60);
-                b = b.saturating_sub(40);
-            }
-            if r > 200 {
-                r = 200;
+            // Fill background either with requested color or system window color
+            match bg_color {
+                Some(color) => {
+                    let brush = unsafe { CreateSolidBrush(color) };
+                    if !brush.is_invalid() {
+                        let _ = unsafe { FillRect(hdc, &rc, brush) };
+                        let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
+                    } else {
+                        let _ = unsafe { FillRect(hdc, &rc, GetSysColorBrush(COLOR_WINDOW)) };
+                    }
+                }
+                None => {
+                    let _ = unsafe { FillRect(hdc, &rc, GetSysColorBrush(COLOR_WINDOW)) };
+                }
             }
 
-            let brush = unsafe { CreateSolidBrush(COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16))) };
-            if !brush.is_invalid() {
-                let _ = unsafe { FillRect(hdc, &sq, brush) };
-                let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
+            if let Some(state) = visual {
+                let img_w = state.image_size.0.max(1);
+                let img_h = state.image_size.1.max(1);
+                let scale = f32::min(cw as f32 / img_w as f32, ch as f32 / img_h as f32);
+                let draw_w = (img_w as f32 * scale).round() as i32;
+                let draw_h = (img_h as f32 * scale).round() as i32;
+                let dx = rc.left + (cw - draw_w) / 2;
+                let dy = rc.top + (ch - draw_h) / 2;
+                let draw_rect = RECT { left: dx, top: dy, right: dx + draw_w, bottom: dy + draw_h };
+
+                let brush = unsafe { CreateSolidBrush(state.color) };
+                if !brush.is_invalid() {
+                    let _ = unsafe { FillRect(hdc, &draw_rect, brush) };
+                    let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
+                }
+
+                log(&format!(
+                    "WM_PAINT: client {}x{} using {} scaled→{}x{} at ({}, {}), text_color={}",
+                    cw,
+                    ch,
+                    state.describe(),
+                    draw_w,
+                    draw_h,
+                    dx,
+                    dy,
+                    match text_color {
+                        Some(c) => format!("0x{:06X}", c.0 & 0x00FF_FFFF),
+                        None => "<default>".into(),
+                    }
+                ));
+            } else {
+                log(&format!(
+                    "WM_PAINT: client {}x{} but no preview_visual yet",
+                    cw,
+                    ch
+                ));
             }
 
             let _ = unsafe { EndPaint(hwnd, &ps) };
             LRESULT(0)
+        }
+        WM_NCDESTROY => {
+            clear_window_visual_state(hwnd);
+            unsafe { DefWindowProcW(hwnd, msg, w, l) }
         }
 
         WM_SIZE => {
@@ -214,6 +325,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             let width = (lp & 0xFFFF) as i32;
             let height = ((lp >> 16) & 0xFFFF) as i32;
             log(&format!("WM_SIZE lParam=0x{:X} => {}x{}", lp, width, height));
+            let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
             unsafe { DefWindowProcW(hwnd, msg, w, l) }
         }
 
@@ -221,13 +333,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
     }
 }
 
-#[implement(IObjectWithSite, IPreviewHandler, IOleWindow, IInitializeWithStream)]
+#[implement(IObjectWithSite, IPreviewHandler, IOleWindow, IInitializeWithStream, IPreviewHandlerVisuals)]
 pub struct BlpPreviewHandler {
     hwnd_parent: Cell<HWND>, // из SetWindow(parent, ...)
     hwnd_preview: Cell<HWND>,
-    rc: Cell<RECT>,                   // из SetWindow/SetRect
-    site: RefCell<Option<IUnknown>>,  // из SetSite
-    stream: RefCell<Option<IStream>>, // из Initialize
+    rc: Cell<RECT>,                         // из SetWindow/SetRect
+    site: RefCell<Option<IUnknown>>,        // из SetSite
+    stream: RefCell<Option<IStream>>,       // из Initialize
+    preview_visual: RefCell<Option<PreviewVisual>>,
+    background_color: RefCell<Option<COLORREF>>,
+    text_color: RefCell<Option<COLORREF>>,
+    font: RefCell<Option<LOGFONTW>>,
+    frame: RefCell<Option<IPreviewHandlerFrame>>,
 }
 #[allow(non_snake_case)]
 impl BlpPreviewHandler {
@@ -240,7 +357,69 @@ impl BlpPreviewHandler {
             rc: Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }),
             site: RefCell::new(None),
             stream: RefCell::new(None),
+            preview_visual: RefCell::new(None),
+            background_color: RefCell::new(None),
+            text_color: RefCell::new(None),
+            font: RefCell::new(None),
+            frame: RefCell::new(None),
         }
+    }
+
+    fn refresh_preview_visual(&self, reason: &str) {
+        let rc = self.rc.get();
+        let width = rc.right - rc.left;
+        let height = rc.bottom - rc.top;
+
+        if width <= 0 || height <= 0 {
+            log(&format!("{} → preview size {}x{} (skip)", reason, width, height));
+            self.sync_visual_state_to_window(self.hwnd_preview.get());
+            return;
+        }
+
+        let visual = self.generate_preview_visual(width, height);
+        log(&format!("{} → {}", reason, visual.describe()));
+        *self.preview_visual.borrow_mut() = Some(visual);
+        self.sync_visual_state_to_window(self.hwnd_preview.get());
+    }
+
+    fn generate_preview_visual(&self, width: i32, height: i32) -> PreviewVisual {
+        let mut seed = unsafe { GetTickCount() };
+        if let Some(stream) = self.stream.borrow().as_ref() {
+            seed ^= (stream.as_raw() as u64) as u32;
+        }
+        seed ^= width as u32;
+        seed = seed.rotate_left(13) ^ (height as u32);
+
+        let mut r = (seed & 0xFF) as u8;
+        let mut g = ((seed >> 8) & 0xFF) as u8;
+        let mut b = ((seed >> 16) & 0xFF) as u8;
+
+        if r > 220 && g > 220 && b > 220 {
+            r = r.saturating_sub(70);
+            g = g.saturating_sub(90);
+            b = b.saturating_sub(110);
+        }
+
+        PreviewVisual {
+            color: COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16)),
+            image_size: (width.max(1), height.max(1)),
+        }
+    }
+
+    fn sync_visual_state_to_window(&self, hwnd: HWND) {
+        if hwnd.is_invalid() {
+            return;
+        }
+
+        let preview = *self.preview_visual.borrow();
+        let background = *self.background_color.borrow();
+        let text = *self.text_color.borrow();
+
+        update_window_visual_state(hwnd, |state| {
+            state.preview = preview;
+            state.background = background;
+            state.text = text;
+        });
     }
 }
 
@@ -292,12 +471,15 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
                     rc.top,
                     rc.right - rc.left,
                     rc.bottom - rc.top,
-                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
                 )
             } {
                 Ok(_) => log("  SetWindow => SetWindowPos => OK"),
                 Err(e) => log(&format!("  SetWindowPos => ERR: {:?}", e)),
             };
+            let _ = unsafe { InvalidateRect(Some(preview), None, false) };
+            log("  SetWindow => InvalidateRect(false)");
+            self.sync_visual_state_to_window(preview);
         } else {
             log("  SetWindow => hwnd_preview is invalid, skipping SetParent/SetWindowPos");
         }
@@ -335,27 +517,15 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
                     rc.top,
                     rc.right - rc.left,
                     rc.bottom - rc.top,
-                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
                 )
             } {
                 Ok(_) => log("  SetRect => SetWindowPos => OK"),
                 Err(e) => log(&format!("  SetRect => SetWindowPos => ERR: {:?}", e)),
             };
-
-            if rc.right > rc.left && rc.bottom > rc.top {
-                let ok = unsafe {
-                    RedrawWindow(
-                        Some(preview),
-                        None,
-                        None,
-                        RDW_INVALIDATE | RDW_ERASE,
-                    )
-                }
-                .as_bool();
-                log(&format!("  SetRect => RedrawWindow => {}", ok));
-            } else {
-                log("  SetRect => RedrawWindow skipped (zero area)");
-            }
+            let _ = unsafe { InvalidateRect(Some(preview), None, false) };
+            log("  SetRect => InvalidateRect(false)");
+            self.refresh_preview_visual("SetRect");
         }
         Ok(())
     }
@@ -364,6 +534,32 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
         let parent = self.hwnd_parent.get();
         let rc = self.rc.get();
         let preview = self.hwnd_preview.get();
+
+        if let Some(stream) = self.stream.borrow_mut().take() {
+            log("DoPreview: stream present – reading signature");
+            unsafe {
+                stream.Seek(0, windows::Win32::System::Com::STREAM_SEEK_SET, None)?;
+            }
+            let mut magic = [0u8; 4];
+            let mut read = 0u32;
+            let hr = unsafe { stream.Read(magic.as_mut_ptr() as *mut _, magic.len() as u32, Some(&mut read)) };
+            match hr.ok() {
+                Ok(()) => {}
+                Err(e) if e.code() == S_FALSE => {
+                    log(&format!("DoPreview: stream.Read returned S_FALSE after {} bytes", read));
+                }
+                Err(e) => {
+                    log(&format!("DoPreview: stream.Read failed hr=0x{:08X}", e.code().0));
+                    return Err(e);
+                }
+            }
+            log(&format!(
+                "DoPreview: stream magic bytes = {:02X} {:02X} {:02X} {:02X}",
+                magic[0], magic[1], magic[2], magic[3]
+            ));
+        } else {
+            log("DoPreview: stream absent (already consumed or not provided)");
+        }
 
         log(&format!(
             "DoPreview 0x{:X}:0x{:X} (rc=({}, {}, {}, {}), has_stream={})",
@@ -405,21 +601,9 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
             };
             self.hwnd_preview.set(hwnd);
             log(&format!("  DoPreview => ShowWindow({})", unsafe { ShowWindow(hwnd, SW_SHOW) }.as_bool()));
-
-            if rc.right > rc.left && rc.bottom > rc.top {
-                let ok = unsafe {
-                    RedrawWindow(
-                        Some(hwnd),
-                        None,
-                        None,
-                        RDW_INVALIDATE | RDW_ERASE | RDW_INTERNALPAINT | RDW_UPDATENOW,
-                    )
-                }
-                .as_bool();
-                log(&format!("  DoPreview => initial RedrawWindow => {}", ok));
-            } else {
-                log("  DoPreview => initial RedrawWindow skipped (zero area)");
-            }
+            let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            log("  DoPreview => InvalidateRect(false) for new window");
+            self.sync_visual_state_to_window(hwnd);
         } else {
             match unsafe {
                 SetWindowPos(
@@ -429,28 +613,19 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
                     rc.top,                                     // Y: new top position  (ignored if SWP_NOMOVE is set)
                     rc.right - rc.left,                         // cx: new width in pixels
                     rc.bottom - rc.top,                         // cy: new height in pixels
-                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE, // uFlags: don't move, don't change Z-order, don't activate
+                    SWP_NOZORDER | SWP_NOACTIVATE,              // uFlags: don't change Z-order, don't activate
                 )
             } {
                 Ok(_) => log("  DoPreview => SetWindowPos => OK"),
                 Err(e) => log(&format!("  DoPreview => SetWindowPos => ERR: {:?}", e)),
             };
+            let _ = unsafe { InvalidateRect(Some(preview), None, false) };
+            log("  DoPreview => InvalidateRect(false) after SetWindowPos");
+            self.sync_visual_state_to_window(preview);
 
-            if rc.right > rc.left && rc.bottom > rc.top {
-                let ok = unsafe {
-                    RedrawWindow(
-                        Some(preview),
-                        None,
-                        None,
-                        RDW_INVALIDATE | RDW_ERASE,
-                    )
-                }
-                .as_bool();
-                log(&format!("  DoPreview => RedrawWindow after SetWindowPos => {}", ok));
-            } else {
-                log("  DoPreview => RedrawWindow after SetWindowPos skipped (zero area)");
-            }
         }
+
+        self.refresh_preview_visual("DoPreview");
 
         let preview = self.hwnd_preview.get();
 
@@ -493,8 +668,14 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
             log("  window already destroyed by host");
         }
 
+        clear_window_visual_state(preview);
+
         // Always clear our handle to avoid double-destroy later
         self.hwnd_preview.set(HWND::default());
+        self.preview_visual.borrow_mut().take();
+        self.background_color.borrow_mut().take();
+        self.text_color.borrow_mut().take();
+        self.font.borrow_mut().take();
         Ok(())
     }
 
@@ -521,6 +702,66 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
             }
         };
         log(&format!("TranslateAccelerator (pmsg=0x{addr:X}, msg=0x{:X}, wParam=0x{:X}, lParam=0x{:X})", message, wparam, lparam));
+
+        if let Some(frame) = self.frame.borrow().as_ref() {
+            let hr = unsafe { frame.TranslateAccelerator(pmsg) };
+            match hr {
+                Ok(()) => {
+                    log("  TranslateAccelerator → forwarded to IPreviewHandlerFrame (S_OK)");
+                    return Ok(());
+                }
+                Err(e) if e.code() == S_FALSE => {
+                    log("  TranslateAccelerator → frame returned S_FALSE (not handled)");
+                    return Ok(());
+                }
+                Err(e) => {
+                    log(&format!("  TranslateAccelerator → frame returned error 0x{:08X}", e.code().0));
+                    return Err(e);
+                }
+            }
+        } else {
+            log("  TranslateAccelerator → no IPreviewHandlerFrame cached");
+        }
+        Ok(())
+    }
+}
+
+/// Host-provided visual customization (background/text colors, fonts).
+#[allow(non_snake_case)]
+impl IPreviewHandlerVisuals_Impl for BlpPreviewHandler_Impl {
+    fn SetBackgroundColor(&self, color: COLORREF) -> Result<()> {
+        log(&format!("SetBackgroundColor 0x{:06X}", color.0 & 0x00FF_FFFF));
+        *self.background_color.borrow_mut() = Some(color);
+        self.sync_visual_state_to_window(self.hwnd_preview.get());
+        Ok(())
+    }
+
+    fn SetFont(&self, plf: *const LOGFONTW) -> Result<()> {
+        if plf.is_null() {
+            log("SetFont(NULL) – clearing stored font");
+            self.font.borrow_mut().take();
+            return Ok(());
+        }
+
+        let lf = unsafe { *plf };
+        let face_len = lf.lfFaceName.iter().position(|&c| c == 0).unwrap_or(lf.lfFaceName.len());
+        let face = String::from_utf16_lossy(&lf.lfFaceName[..face_len]);
+        log(&format!(
+            "SetFont height={} weight={} charset={} face='{}'",
+            lf.lfHeight,
+            lf.lfWeight,
+            lf.lfCharSet.0,
+            face
+        ));
+        *self.font.borrow_mut() = Some(lf);
+        self.sync_visual_state_to_window(self.hwnd_preview.get());
+        Ok(())
+    }
+
+    fn SetTextColor(&self, color: COLORREF) -> Result<()> {
+        log(&format!("SetTextColor 0x{:06X}", color.0 & 0x00FF_FFFF));
+        *self.text_color.borrow_mut() = Some(color);
+        self.sync_visual_state_to_window(self.hwnd_preview.get());
         Ok(())
     }
 }
@@ -530,6 +771,7 @@ impl IPreviewHandler_Impl for BlpPreviewHandler_Impl {
 impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
     fn SetSite(&self, site: Ref<'_, IUnknown>) -> Result<()> {
         let mut slot = self.site.borrow_mut();
+        let mut frame_slot = self.frame.borrow_mut();
 
         match site.cloned() {
             Some(u) => {
@@ -539,6 +781,17 @@ impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
                     log(&format!("SetSite (site=0x{:X}) — replacing previous site", raw as usize));
                 } else {
                     log(&format!("SetSite (site=0x{:X}) — new site assigned", raw as usize));
+                }
+
+                match u.cast::<IPreviewHandlerFrame>() {
+                    Ok(frame) => {
+                        log("  SetSite => cached IPreviewHandlerFrame");
+                        *frame_slot = Some(frame);
+                    }
+                    Err(err) => {
+                        log(&format!("  SetSite => IPreviewHandlerFrame unavailable (hr=0x{:08X})", err.code().0));
+                        frame_slot.take();
+                    }
                 }
 
                 *slot = Some(u);
@@ -551,6 +804,7 @@ impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
                 } else {
                     log("SetSite (site=None) — no previous site to release");
                 }
+                frame_slot.take();
             }
         }
 
@@ -569,9 +823,15 @@ impl IObjectWithSite_Impl for BlpPreviewHandler_Impl {
 #[allow(non_snake_case)]
 impl IOleWindow_Impl for BlpPreviewHandler_Impl {
     fn GetWindow(&self) -> Result<HWND> {
-        let hwnd = self.hwnd_parent.get();
-        log(&format!("GetWindow → HWND(0x{:X})", hwnd.0 as usize));
-        Ok(hwnd)
+        let preview = self.hwnd_preview.get();
+        if !preview.is_invalid() {
+            log(&format!("GetWindow → preview HWND(0x{:X})", preview.0 as usize));
+            return Ok(preview);
+        }
+
+        let parent = self.hwnd_parent.get();
+        log(&format!("GetWindow → fallback parent HWND(0x{:X})", parent.0 as usize));
+        Ok(parent)
     }
 
     fn ContextSensitiveHelp(&self, fEnterMode: BOOL) -> Result<()> {
