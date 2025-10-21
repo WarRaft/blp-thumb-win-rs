@@ -35,12 +35,13 @@ bash build-only.sh
 ```
 
 Artifacts will be placed in `./bin/`:
+
 - `blp_thumb_win.dll` — the COM DLL
 - `blp-thumb-win-installer.exe` — the installer that writes registry entries
 
 ## Install on Windows (recommended)
 
-Copy the `blp_thumb_win.dll` and `blp-thumb-win-installer.exe` to a Windows machine
+Copy `blp-thumb-win-installer.exe` to a Windows machine
 and run the installer. Registration is performed in HKCU for the current user, so
 no elevation is required.
 
@@ -79,11 +80,13 @@ HKCU
 
 Explorer lists touched by the installer (HKCU):
 
+```
 HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\ThumbnailHandlers
-   (.blp) = {CLSID_BLP_THUMB}
+(.blp) = {CLSID_BLP_THUMB}
 
 HKCU\Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved
-   {CLSID_BLP_THUMB} = "BLP Thumbnail Provider"
+{CLSID_BLP_THUMB} = "BLP Thumbnail Provider"
+```
 
 ## Notes & troubleshooting
 
@@ -96,6 +99,7 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved
 ## Contributing
 
 Contributions are welcome. The main areas of work are:
+
 - Improving BLP parsing and rendering quality in the DLL
 - Making installation/registration more robust across Windows versions
 - Adding automated tests or CI that validates registration on Windows VMs
