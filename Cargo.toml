@@ -43,9 +43,9 @@ winreg = "0.55.0"
 windows-result = "0.4.1"
 
 [build-dependencies]
-image = "0.25.8"
-ico = "0.4.0"
-winresource = "0.1.23"
+image = "0.25.9"
+ico = "0.5.0"
+winresource = "0.1.28"
 
 # ------------------------------
 # Library section (the COM DLL)
